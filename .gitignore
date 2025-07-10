@@ -1,0 +1,47 @@
+﻿# Byte-кеши пайтона
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# VSCode и IDE'шное
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# PowerShell мусор
+*.ps1~    # резервные копии
+*.ps1xml
+*.log
+
+# Всякие tmp и кеши
+*.tmp
+*.bak
+*.swp
+*.DS_Store
+Thumbs.db
+
+# Python виртуалки
+venv/
+.env/
+env/
+
+# Логи и output
+*.log
+output/
+*.out
+*.err
+
+# Чисто на всякий случай
+*.tar.gz
+*.zip
+*.7z
+
+# Мои папки, которые трогать нельзя
+audio_src/
+audio-lora/
+rootfs/
+temp/
