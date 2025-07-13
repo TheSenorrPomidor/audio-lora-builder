@@ -290,7 +290,6 @@ foreach ($Pkg in $Pkgs) {
 }
 if ($Missing.Count -eq 0) {
     Write-Host "📦 Все пакеты уже установлены. Установка не требуется."
-    return
 } else {
 	# Проверка: есть ли .deb и Packages.gz
 	$HasDebs = Test-Path "$AptCacheWin\*.deb"
@@ -358,16 +357,18 @@ if ($Missing.Count -eq 0) {
 
 
 # === 5.4 Установка Python-библиотек (torch, faster-whisper) из temp\pip (Windows) ===
-Write-Host "`n5.4 📦 Установка Python-библиотек (torch, faster-whisper) из temp\pip (Windows)"
+Write-Host "`n5.4 📦 Установка Python-библиотек (torch, faster-whisper, whisperx) из temp\pip (Windows)"
 
 $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
 
 $TorchWheel = "torch*.whl"
 $FWheel = "faster_whisper*.whl"
+$WXWheel    = "whisperx-*.whl"
 
 # 5.4.1 Проверяем, установлены ли Python-библиотеки
-$PipCheck = "pip show torch > /dev/null 2>&1 && pip show faster-whisper > /dev/null 2>&1"
+$PipCheck = "pip show torch > /dev/null 2>&1 && pip show faster-whisper > /dev/null 2>&1 && pip show whisperx > /dev/null 2>&1"
+
 wsl -d $DistroName -- bash -c "$PipCheck"
 $PyDepsOk = $LASTEXITCODE
 
@@ -377,17 +378,28 @@ if ($PyDepsOk -eq 0) {
     # Только если пакеты не установлены, проверяем wheel-файлы и при необходимости скачиваем!
     $TorchExists = Test-Path (Join-Path $PipCacheWin $TorchWheel)
     $FWExists = Test-Path (Join-Path $PipCacheWin $FWheel)
+	$WXExists   = Test-Path (Join-Path $PipCacheWin $WXWheel)
 
-    if (-not $TorchExists -or -not $FWExists) {
+    if (-not $TorchExists -or -not $FWExists -or -not $WXExists) {
         Write-Host "📦 Wheel-файлы отсутствуют, скачиваем их (интернет только первый раз)..."
-        wsl -d $DistroName -- bash -c "pip download torch --index-url https://download.pytorch.org/whl/cu118 -d '$PipCacheWsl'"
-        wsl -d $DistroName -- bash -c "pip download faster-whisper -d '$PipCacheWsl'"
+		if (-not $TorchExists) {
+			Write-Host "⏬ Загружаем torch..."
+			wsl -d $DistroName -- bash -c "pip download torch --index-url https://download.pytorch.org/whl/cu118 -d '$PipCacheWsl'"
+		}
+		if (-not $FWExists) {
+			Write-Host "⏬ Загружаем faster_whisper..."
+			wsl -d $DistroName -- bash -c "pip download faster-whisper -d '$PipCacheWsl'"
+		}
+		if (-not $WXExists) {
+			Write-Host "⏬ Загружаем whisperX..."			
+			wsl -d $DistroName -- bash -c "pip download whisperx -d '$PipCacheWsl'"
+		}		
     } else {
         Write-Host "📦 Все wheel-файлы уже есть в temp\pip, скачивание не требуется."
     }
 
     Write-Host "📦 Устанавливаем Python-библиотеки из temp\pip (.whl)..."
-    wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' torch faster-whisper"
+    wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' torch faster-whisper whisperx"
 }
 
 
@@ -483,6 +495,37 @@ wsl -d $DistroName -- bash -c "$escapedCommand"
 
 Write-Host "✅ Конфигурация сохранена в WSL: $WSL_ENV_FILE"
 
+
+
+
+
+Write-Host "❌ СТОП ТЕСТ"
+exit 1
+
+# === 5.7 WhisperX (кэшируем модель) ===
+Write-Host "`n# 5.7 WhisperX (кэшируем модель) `n"
+$ModelCacheWin = Join-Path $TempDir "huggingface\whisper"
+$ModelCacheWinWsl = Convert-WindowsPathToWsl $ModelCacheWin
+$ModelCacheLocalWsl = "/root/.cache/huggingface/hub"
+
+$PythonLoadScript = @"
+import whisperx
+os.environ['HF_HOME'] = r'$ModelCacheWinWsl'
+print('5.7.2 (python) 🔄 Кэшируем WhisperX large-v3 на CPU...')
+model = whisperx.load_model("large-v3", device="cpu")
+print('5.7.2 (python) ✅ Модель WhisperX загружена и закэширована (CPU).')
+
+try:
+    print('5.7.2 (python) 🔄 Пробуем загрузить WhisperX на GPU (если доступно)...')
+    model = whisperx.load_model("large-v3", device="cuda")
+    print('5.7.2 (python) ✅ Модель WhisperX загружена и закэширована (GPU).')
+except Exception as e:
+    print('5.7.2 (python) ⚠️ Не удалось загрузить WhisperX на GPU: ' + str(e))
+"@
+
+$ScriptFile = "/tmp/load_whisperx.py"
+$PythonLoadScript | Set-Content -Encoding UTF8 $ScriptFile
+wsl python3 $ScriptFile
 
 
 
