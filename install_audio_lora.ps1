@@ -414,7 +414,7 @@ else {
 
 
 
-# === 5.4 Установка Python-библиотек (torch, faster-whisper или whisperx) ===
+# === 5.4 Установка Python-библиотек (faster-whisper или torch + whisperx) ===
 Write-Host "`n5.4 📦 Установка Python-библиотек (torch, $WhisperImpl) из temp\pip (Windows)"
 $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
@@ -432,7 +432,9 @@ foreach ($pkg in $PyWheels) {
     $IsForThisImpl = ($pkg.Impl -eq "all" -or $pkg.Impl -eq $WhisperImpl)
     if ($IsForThisImpl) {
 		# Выделяем имя пакета без версии
+	   #$DepName = $pkg.Name -split '==|\+' | Select-Object -First 1
 		$DepName = $pkg.Name -split '==|\+' | Select-Object -First 1
+		$DepVersion = $pkg.Name -split '==|\+' | Select-Object -Skip 1 | Select-Object -First 1
 		$IsInstalled = wsl -d $DistroName -- bash -c "pip show $DepName > /dev/null && echo ok"
 		if ($IsInstalled -eq "ok") {
 			Write-Host "✅ $($pkg.Name) уже установлен — пропускаем"
