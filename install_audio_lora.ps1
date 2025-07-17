@@ -1,4 +1,4 @@
-﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.0"
+﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.1"
 # === install_audio_lora.ps1 ===
 
 # === Настройка путей ===
@@ -25,6 +25,39 @@ function Convert-WindowsPathToWsl {
     )
     $WslPath = $WindowsPath -replace '\\', '/' -replace '^([A-Za-z]):', '/mnt/$1'
     return $WslPath.ToLower()
+}
+function Get-WhlInventory($WhlDir, $DistroName) {
+    $Inventory = @{}
+    $WhlFiles = Get-ChildItem -Path $WhlDir -Filter *.whl
+
+    foreach ($whl in $WhlFiles) {
+        # Путь до исходного файла
+        $originalPath = $whl.FullName.Replace('\', '/')
+
+        # Временно переименовываем файл с расширением .zip
+		$tempZipPath = [System.IO.Path]::ChangeExtension($whl.FullName, ".zip")
+		Move-Item -Path $whl.FullName -Destination $tempZipPath -Force
+
+
+        # Извлекаем Name и Version из METADATA файла
+        $cmd = "unzip -p '$tempZipPath' '*/METADATA' | grep -E '^(Name|Version):'"
+        $meta = wsl -d $DistroName -- bash -c $cmd
+
+        # Переименовываем обратно .zip в whl после использования
+		Move-Item -Path $tempZipPath -Destination $whl.FullName -Force
+
+
+        # Разбор результата
+        $lines = $meta -split "`n"
+        $name = ($lines | Where-Object { $_ -like 'Name:*' }) -replace 'Name:\s*', ''
+        $version = ($lines | Where-Object { $_ -like 'Version:*' }) -replace 'Version:\s*', ''
+
+        if ($name -and $version) {
+            $Inventory["$name==$version"] = $whl.FullName
+        }
+    }
+
+    return $Inventory
 }
 
 
@@ -132,10 +165,10 @@ wsl -d $DistroName -- bash -c "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"
 Write-Host "5. 📦 === Установка зависимостей ==="
 
 # 5.1. Установка python3-pip и ffmpeg (и dpkg-dev для генерации Packages.gz для установки оффлайн с зависимостями через локальный репозиторий)
-Write-Host "`n5.1 📦 Установка python3-pip и ffmpeg (и dpkg-dev для генерации Packages.gz для установки оффлайн с зависимостями через локальный репозиторий)"
+Write-Host "`n5.1 📦 Установка python3-pip и ffmpeg (и dpkg-dev для генерации Packages.gz для установки оффлайн с зависимостями через локальный репозиторий и unzip для анализа whl файлов)"
 $AptCacheWin = Join-Path $TempDir "apt"
 $AptCacheWsl = Convert-WindowsPathToWsl $AptCacheWin
-$Pkgs = @("python3-pip", "ffmpeg", "dpkg-dev")
+$Pkgs = @("python3-pip", "ffmpeg", "dpkg-dev", "unzip")
 
 # Проверка, установлены ли пакеты из $Pkgs
 $Missing = @()
@@ -418,21 +451,20 @@ else {
 Write-Host "`n5.4 📦 Установка Python-библиотек (torch, $WhisperImpl) из temp\pip (Windows)"
 $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
-# @{ Name = "torchaudio==2.0.0+cu118"; Pattern = "torchaudio-*.whl";          Source = "torch"; Impl = "whisperx" },
-$PyWheels = @(
-  @{ Name = "torch==2.0.0+cu118";      Pattern = "torch-*.whl";               Source = "torch"; Impl = "whisperx" },
-  @{ Name = "pyannote-audio==2.1.1";   Pattern = "pyannote_audio-2.1.1*.whl"; Source = "torch"; Impl = "whisperx" },
-  @{ Name = $WhisperImpl;              Pattern = $WhisperWheel;               Source = "pypi";  Impl = "all"      },
-  @{ Name = "transformers==4.28.1";    Pattern = "transformers-*.whl";        Source = "pypi";  Impl = "whisperx" },
-  @{ Name = "librosa==0.10.0";         Pattern = "librosa-*.whl";             Source = "pypi";  Impl = "whisperx" }
-)
 
+$PyWheels = @(
+  @{ Name = "whisperx==3.3.1";      Source = "torch"; Impl = "whisperx" },
+  @{ Name = "transformers==4.28.1"; Source = "torch"; Impl = "whisperx" },
+  @{ Name = "librosa==0.10.0";      Source = "torch"; Impl = "whisperx" },
+  @{ Name = "faster-whisper";       Source = "pypi";  Impl = "faster-whisper" }
+
+)
+#Проверить какие пакеты .whl установлены в WSL
 $PyWheelsMissing = @()
 foreach ($pkg in $PyWheels) {
     $IsForThisImpl = ($pkg.Impl -eq "all" -or $pkg.Impl -eq $WhisperImpl)
     if ($IsForThisImpl) {
-		# Выделяем имя пакета без версии
-	   #$DepName = $pkg.Name -split '==|\+' | Select-Object -First 1
+
 		$DepName = $pkg.Name -split '==|\+' | Select-Object -First 1
 		$DepVersion = $pkg.Name -split '==|\+' | Select-Object -Skip 1 | Select-Object -First 1
 		$IsInstalled = wsl -d $DistroName -- bash -c "pip show $DepName > /dev/null && echo ok"
@@ -445,17 +477,90 @@ foreach ($pkg in $PyWheels) {
 	}
 }
 
-#Проверяем наличие ранее скаченных пакетов .whl в temp/pip
-$PyWheelsToDownload = @()
+# Проверяем наличие ранее скаченных пакетов .whl в temp/pip
+#$PyWheelsToDownload = @()
+$WhlCache = Get-WhlInventory -WhlDir $PipCacheWin -DistroName $DistroName
 foreach ($pkg in $PyWheelsMissing) {
-    $Files = Get-ChildItem -Path $PipCacheWin -Filter $pkg.Pattern
-	if ($Files.Count -eq 0) {
-		Write-Host "⬇️ В temp/pip $($pkg.Name) не найден, добавляем в очередь скачивания..."
-		$PyWheelsToDownload += $pkg
+    $match = $WhlCache | Where-Object { $_.Name -eq $pkg.Name }
+    if (-not $match) {
+        Write-Host "⬇️ В temp/pip $($pkg.Name) не найден"
+        #$PyWheelsToDownload += $pkg
     } else {
-        Write-Host "✅ $($pkg.Name) уже ранее был скачен в temp/pip."
+        Write-Host "✅ $($pkg.Name) уже ранее был скачен в temp/pip"
     }
 }
+
+
+
+
+
+######################Временно не утверждено
+
+
+# Генерация requirements_*.in по группам из $PyWheelsMissing
+$PyTorchWheelsMissing = $PyWheelsMissing | Where-Object { $_.Source -eq "torch" } 
+$PypiWheelsMissing  = $PyWheelsMissing | Where-Object { $_.Source -eq "pypi" } 
+
+# Пути к *.in/.txt (Windows)
+$ReqInTorchPathWin  = Join-Path $PipCacheWin "requirements_torch.in"
+$ReqTxtTorchPathWin = Join-Path $PipCacheWin "requirements_torch.txt"
+$ReqInPyPiPathWin   = Join-Path $PipCacheWin "requirements_pypi.in"
+$ReqTxtPyPiPathWin  = Join-Path $PipCacheWin "requirements_pypi.txt"  
+
+# Пути к *.in/.txt (WSL)
+$ReqInTorchPathWsl = Convert-WindowsPathToWsl $ReqInTorchPathWin
+$ReqTxtTorchPathWsl = Convert-WindowsPathToWsl $ReqTxtTorchPathWin
+$ReqInPyPiPathWsl = Convert-WindowsPathToWsl $ReqInPyPiPathWin
+$ReqTxtPyPiPathWsl = Convert-WindowsPathToWsl $ReqTxtPyPiPathWin
+
+
+
+# Создаём *.in и компилируем *.txt через uv внутри WSL
+if ($PyTorchWheelsMissing.Count -gt 0) {
+	#Получаем список пакетов torch из $PyWheels и записываем в файл
+	$PyWheelsTorch = $PyWheels | Where-Object { $_.Source -eq "torch" } | Select-Object -ExpandProperty Name
+    $PyWheelsTorch | Set-Content -Encoding UTF8 -Path $ReqInTorchPathWin
+    wsl -d $DistroName -- bash -c "uv pip compile '$ReqInTorchPathWsl' --output-file '$ReqTxtTorchPathWsl' --extra-index-url https://download.pytorch.org/whl/cu118"
+}
+
+if ($PypiWheelsMissing.Count -gt 0) {
+	#Получаем список пакетов pypi из $PyWheels и записываем в файл
+	$PyWheelsPyPi = $PyWheels | Where-Object { $_.Source -eq "pypi" } | Select-Object -ExpandProperty Name
+    $PyWheelsPyPi | Set-Content -Encoding UTF8 -Path $ReqInPyPiPathWin
+    wsl -d $DistroName -- bash -c "uv pip compile '$ReqInPyPiPathWsl' --output-file '$ReqTxtPyPiPathWsl'"
+}
+
+Write-Host "❌ СТОП ТЕСТ"; exit 1
+
+###############################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #Скачиваем отсутствующие пакеты .whl в temp/pip
 $TorchList = ($PyWheelsToDownload | Where-Object { $_.Source -eq "torch" }).Name -join ' '
