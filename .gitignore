@@ -45,3 +45,6 @@ audio_src/
 audio-lora/
 rootfs/
 temp/
+ssh_keys/
+temp — копия/
+old/

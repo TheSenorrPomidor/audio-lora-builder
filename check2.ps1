@@ -137,10 +137,9 @@ if ($PyWheelsMissing.Count -gt 0) {
 	wsl -d $DistroName -- bash -c "pip install '$($PipCacheWsl)/$($UvWheel.Name)' --no-index --find-links='$PipCacheWsl' > /dev/null 2>&1"
 
 
+	#Удаляем кэш который накопился в WSL
+	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
 
-	
-	
-	
 	
 	@("torch", "pypi") | ForEach-Object {
     $group = $_
@@ -165,14 +164,18 @@ if ($PyWheelsMissing.Count -gt 0) {
 	if ((Test-Path $txtPathWin) -and ($toDownload.Count -eq 0)) {
 		Write-Host "`n📄 Все ключевые пакеты WHL по источнику $group скачены и файл requirements_${group}.txt уже есть, Генерация нового requirements_${group}.txt не требуется..."
 		} else {
-			$compileCmd = "uv pip compile '$inPathWsl' --output-file '$txtPathWsl'"
-			if ($group -eq "torch") {
-				$compileCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
-			}		
-			Write-Host "`n📄 Генерация requirements_${group}.txt..."
-			wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
-			Write-Host "🌐 Загрузка зависимостей $group..."
-			wsl -d $DistroName -- bash -c "pip download -r '$txtPathWsl' -d '$PipCacheWsl'"
+				$compileCmd = "uv pip compile '$inPathWsl' --output-file '$txtPathWsl'"
+				if ($group -eq "torch") {
+					$compileCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}		
+				Write-Host "`n📄 Генерация requirements_${group}.txt..."
+				wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
+				Write-Host "🌐 Загрузка зависимостей $group..."
+				$downloadCmd = "pip download -r '$txtPathWsl' -d '$PipCacheWsl'"
+				if ($group -eq "torch") {
+					$downloadCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}
+				wsl -d $DistroName -- bash -c "$downloadCmd"
 			}
 		Write-Host "📦 Установка $group-пакетов..."
 		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$txtPathWsl'"
@@ -539,25 +542,362 @@ WARNING: Package(s) not found: librosa
 
 
 
-Правим только этот блок:
-    Write-Host "`n📄 Генерация $group requirements..."
-    wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
-	
-Мой алгоритм который ты проигнорировал: "Если проверка скаченных пакетов в папке temp/pip показала что все файлы есть И файл TXT есть, то заново файл TXT не генерим"	
-Код должен получиться типо такого:
-Если (файл тхт есть И $PyWheelsToDownload.Количество (x=> x.Source = $group) = 0)
-    Write-Host "`n📄 Все ключевые блоки по группе $group скачены и файл group_тхт уже есть, Генерация тхт $group не требуется..."
+PS D:\VM\WSL2\audio-lora-builder> .\check2.ps1
 
-Иначе 
-    Write-Host "`n📄 Генерация $group requirements..."
-    wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
+5.4 📦 Установка Python-библиотек (torch, whisperx) из temp\pip (Windows)
+WARNING: Package(s) not found: whisperx
+⬇️ whisperx==3.3.1 не установлен — добавляем в обработку
+WARNING: Package(s) not found: transformers
+⬇️ transformers==4.28.1 не установлен — добавляем в обработку
+WARNING: Package(s) not found: librosa
+⬇️ librosa==0.10.0 не установлен — добавляем в обработку
+📦 Чтение .whl файлов завершено.
+⬇️ В temp/pip whisperx==3.3.1 не найден
+⬇️ В temp/pip transformers==4.28.1 не найден
+⬇️ В temp/pip librosa==0.10.0 не найден
+Collecting uv
+  Downloading uv-0.8.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (18.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.7/18.7 MB 4.5 MB/s eta 0:00:00
+Saved /mnt/d/vm/wsl2/audio-lora-builder/temp/pip/uv-0.8.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+Successfully downloaded uv
 
-
-
-    # Проверяем, если .txt файл уже существует, пропускаем генерацию
-    if (Test-Path $txtPathWin) {
-        Write-Host "📄 $group requirements.txt уже существует, пропускаем генерацию."
-        return
-    }
+📄 Генерация requirements_torch.txt...
+🌐 Загрузка зависимостей torch...
+Collecting aiohappyeyeballs==2.6.1
+  Downloading aiohappyeyeballs-2.6.1-py3-none-any.whl (15 kB)
+Collecting aiohttp==3.12.14
+  Downloading aiohttp-3.12.14-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 3.2 MB/s eta 0:00:00
+Collecting aiosignal==1.4.0
+  Downloading aiosignal-1.4.0-py3-none-any.whl (7.5 kB)
+Collecting alembic==1.16.4
+  Downloading alembic-1.16.4-py3-none-any.whl (247 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 247.0/247.0 KB 1.8 MB/s eta 0:00:00
+Collecting antlr4-python3-runtime==4.9.3
+  Downloading antlr4-python3-runtime-4.9.3.tar.gz (117 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 117.0/117.0 KB 1.6 MB/s eta 0:00:00
+  Preparing metadata (setup.py) ... done
+Collecting asteroid-filterbanks==0.4.0
+  Downloading asteroid_filterbanks-0.4.0-py3-none-any.whl (29 kB)
+Collecting async-timeout==5.0.1
+  Downloading async_timeout-5.0.1-py3-none-any.whl (6.2 kB)
+Collecting attrs==25.3.0
+  Downloading attrs-25.3.0-py3-none-any.whl (63 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.8/63.8 KB 837.1 kB/s eta 0:00:00
+Collecting audioread==3.0.1
+  Downloading audioread-3.0.1-py3-none-any.whl (23 kB)
+Collecting av==15.0.0
+  Downloading av-15.0.0-cp310-cp310-manylinux_2_28_x86_64.whl (39.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 39.2/39.2 MB 932.8 kB/s eta 0:00:00
+Collecting certifi==2022.12.7
+  Downloading certifi-2022.12.7-py3-none-any.whl (155 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 155.3/155.3 KB 798.4 kB/s eta 0:00:00
+Collecting cffi==1.17.1
+  Downloading cffi-1.17.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (446 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 446.2/446.2 KB 793.4 kB/s eta 0:00:00
+Collecting charset-normalizer==2.1.1
+  Downloading charset_normalizer-2.1.1-py3-none-any.whl (39 kB)
+Collecting click==8.2.1
+  Downloading click-8.2.1-py3-none-any.whl (102 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 102.2/102.2 KB 534.8 kB/s eta 0:00:00
+Collecting coloredlogs==15.0.1
+  Downloading coloredlogs-15.0.1-py2.py3-none-any.whl (46 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 46.0/46.0 KB 418.9 kB/s eta 0:00:00
+Collecting colorlog==6.9.0
+  Downloading colorlog-6.9.0-py3-none-any.whl (11 kB)
+Collecting contourpy==1.3.2
+  Downloading contourpy-1.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (325 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 325.0/325.0 KB 789.1 kB/s eta 0:00:00
+Collecting ctranslate2==4.4.0
+  Downloading ctranslate2-4.4.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (37.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 37.2/37.2 MB 398.5 kB/s eta 0:00:00
+Collecting cycler==0.12.1
+  Downloading cycler-0.12.1-py3-none-any.whl (8.3 kB)
+Collecting decorator==5.2.1
+  Downloading decorator-5.2.1-py3-none-any.whl (9.2 kB)
+Collecting docopt==0.6.2
+  Downloading docopt-0.6.2.tar.gz (25 kB)
+  Preparing metadata (setup.py) ... done
+Collecting einops==0.8.1
+  Downloading einops-0.8.1-py3-none-any.whl (64 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 64.4/64.4 KB 344.5 kB/s eta 0:00:00
+Collecting faster-whisper==1.1.0
+  Downloading faster_whisper-1.1.0-py3-none-any.whl (1.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 706.5 kB/s eta 0:00:00
+Collecting filelock==3.13.1
+  Downloading filelock-3.13.1-py3-none-any.whl (11 kB)
+Collecting flatbuffers==25.2.10
+  Downloading flatbuffers-25.2.10-py2.py3-none-any.whl (30 kB)
+Collecting fonttools==4.59.0
+  Downloading fonttools-4.59.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.8/4.8 MB 453.7 kB/s eta 0:00:00
+Collecting frozenlist==1.7.0
+  Downloading frozenlist-1.7.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (222 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 222.9/222.9 KB 306.4 kB/s eta 0:00:00
+Collecting fsspec==2024.6.1
+  Downloading fsspec-2024.6.1-py3-none-any.whl (177 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 177.6/177.6 KB 285.3 kB/s eta 0:00:00
+Collecting greenlet==3.2.3
+  Downloading greenlet-3.2.3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (582 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 582.2/582.2 KB 381.7 kB/s eta 0:00:00
+Collecting hf-xet==1.1.5
+  Downloading hf_xet-1.1.5-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 326.1 kB/s eta 0:00:00
+Collecting huggingface-hub==0.33.4
+  Downloading huggingface_hub-0.33.4-py3-none-any.whl (515 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 515.3/515.3 KB 268.3 kB/s eta 0:00:00
+Collecting humanfriendly==10.0
+  Downloading humanfriendly-10.0-py2.py3-none-any.whl (86 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 86.8/86.8 KB 215.5 kB/s eta 0:00:00
+Collecting hyperpyyaml==1.2.2
+  Downloading HyperPyYAML-1.2.2-py3-none-any.whl (16 kB)
+Collecting idna==3.4
+  Downloading idna-3.4-py3-none-any.whl (61 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 61.5/61.5 KB 167.5 kB/s eta 0:00:00
+Collecting jinja2==3.1.4
+  Downloading jinja2-3.1.4-py3-none-any.whl (133 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 133.3/133.3 KB 214.6 kB/s eta 0:00:00
+Collecting joblib==1.5.1
+  Downloading joblib-1.5.1-py3-none-any.whl (307 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 307.7/307.7 KB 299.6 kB/s eta 0:00:00
+Collecting julius==0.2.7
+  Downloading julius-0.2.7.tar.gz (59 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.6/59.6 KB 237.9 kB/s eta 0:00:00
+  Preparing metadata (setup.py) ... done
+Collecting kiwisolver==1.4.8
+  Downloading kiwisolver-1.4.8-cp310-cp310-manylinux_2_12_x86_64.manylinux2010_x86_64.whl (1.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 449.5 kB/s eta 0:00:00
+Collecting lazy-loader==0.4
+  Downloading lazy_loader-0.4-py3-none-any.whl (12 kB)
+Collecting librosa==0.10.0
+  Downloading librosa-0.10.0-py3-none-any.whl (252 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 252.9/252.9 KB 536.5 kB/s eta 0:00:00
+Collecting lightning==2.5.2
+  Downloading lightning-2.5.2-py3-none-any.whl (821 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 821.1/821.1 KB 604.9 kB/s eta 0:00:00
+Collecting lightning-utilities==0.11.8
+  Downloading lightning_utilities-0.11.8-py3-none-any.whl (26 kB)
+Collecting llvmlite==0.44.0
+  Downloading llvmlite-0.44.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (42.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.4/42.4 MB 329.3 kB/s eta 0:00:00
+Collecting mako==1.3.10
+  Downloading mako-1.3.10-py3-none-any.whl (78 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.5/78.5 KB 197.9 kB/s eta 0:00:00
+Collecting markdown-it-py==3.0.0
+  Downloading markdown_it_py-3.0.0-py3-none-any.whl (87 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.5/87.5 KB 231.9 kB/s eta 0:00:00
+Collecting markupsafe==2.1.5
+  Downloading MarkupSafe-2.1.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (25 kB)
+Collecting matplotlib==3.10.3
+  Downloading matplotlib-3.10.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (8.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.6/8.6 MB 334.5 kB/s eta 0:00:00
+Collecting mdurl==0.1.2
+  Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Collecting mpmath==1.3.0
+  Downloading mpmath-1.3.0-py3-none-any.whl (536 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 536.2/536.2 KB 363.8 kB/s eta 0:00:00
+Collecting msgpack==1.1.1
+  Downloading msgpack-1.1.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (408 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 408.6/408.6 KB 477.8 kB/s eta 0:00:00
+Collecting multidict==6.6.3
+  Downloading multidict-6.6.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (241 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 241.6/241.6 KB 506.8 kB/s eta 0:00:00
+Collecting networkx==3.3
+  Downloading networkx-3.3-py3-none-any.whl (1.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/1.7 MB 467.2 kB/s eta 0:00:00
+Collecting nltk==3.9.1
+  Downloading nltk-3.9.1-py3-none-any.whl (1.5 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/1.5 MB 246.4 kB/s eta 0:00:00
+Collecting numba==0.61.2
+  Downloading numba-0.61.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.8/3.8 MB 588.0 kB/s eta 0:00:00
+Collecting numpy==2.1.2
+  Downloading numpy-2.1.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (16.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.3/16.3 MB 875.8 kB/s eta 0:00:00
+Collecting nvidia-cublas-cu11==11.11.3.6
+  Downloading nvidia_cublas_cu11-11.11.3.6-py3-none-manylinux2014_x86_64.whl (417.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 417.9/417.9 MB 477.6 kB/s eta 0:00:00
+WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/nvidia-cuda-cupti-cu11/
+Collecting nvidia-cuda-cupti-cu11==11.8.87
+  Downloading nvidia_cuda_cupti_cu11-11.8.87-py3-none-manylinux2014_x86_64.whl (13.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.1/13.1 MB 478.7 kB/s eta 0:00:00
+Collecting nvidia-cuda-nvrtc-cu11==11.8.89
+  Downloading nvidia_cuda_nvrtc_cu11-11.8.89-py3-none-manylinux2014_x86_64.whl (23.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 23.2/23.2 MB 548.5 kB/s eta 0:00:00
+Collecting nvidia-cuda-runtime-cu11==11.8.89
+  Downloading nvidia_cuda_runtime_cu11-11.8.89-py3-none-manylinux2014_x86_64.whl (875 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 875.6/875.6 KB 419.1 kB/s eta 0:00:00
+Collecting nvidia-cudnn-cu11==9.1.0.70
+  Downloading nvidia_cudnn_cu11-9.1.0.70-py3-none-manylinux2014_x86_64.whl (663.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 663.9/663.9 MB 591.3 kB/s eta 0:00:00
+WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/nvidia-cufft-cu11/
+Collecting nvidia-cufft-cu11==10.9.0.58
+  Downloading nvidia_cufft_cu11-10.9.0.58-py3-none-manylinux2014_x86_64.whl (168.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 168.4/168.4 MB 403.4 kB/s eta 0:00:00
+Collecting nvidia-curand-cu11==10.3.0.86
+  Downloading nvidia_curand_cu11-10.3.0.86-py3-none-manylinux2014_x86_64.whl (58.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 58.1/58.1 MB 326.5 kB/s eta 0:00:00
+Collecting nvidia-cusolver-cu11==11.4.1.48
+  Downloading nvidia_cusolver_cu11-11.4.1.48-py3-none-manylinux2014_x86_64.whl (128.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 128.2/128.2 MB 386.6 kB/s eta 0:00:00
+Collecting nvidia-cusparse-cu11==11.7.5.86
+  Downloading nvidia_cusparse_cu11-11.7.5.86-py3-none-manylinux2014_x86_64.whl (204.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 204.1/204.1 MB 680.0 kB/s eta 0:00:00
+WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/nvidia-nccl-cu11/
+Collecting nvidia-nccl-cu11==2.21.5
+  Downloading nvidia_nccl_cu11-2.21.5-py3-none-manylinux2014_x86_64.whl (147.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 147.8/147.8 MB 933.1 kB/s eta 0:00:00
+Collecting nvidia-nvtx-cu11==11.8.86
+  Downloading nvidia_nvtx_cu11-11.8.86-py3-none-manylinux2014_x86_64.whl (99 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 99.1/99.1 KB 425.7 kB/s eta 0:00:00
+Collecting omegaconf==2.3.0
+  Downloading omegaconf-2.3.0-py3-none-any.whl (79 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.5/79.5 KB 432.4 kB/s eta 0:00:00
+Collecting onnxruntime==1.22.1
+  Downloading onnxruntime-1.22.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.5 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.5/16.5 MB 1.3 MB/s eta 0:00:00
+Collecting optuna==4.4.0
+  Downloading optuna-4.4.0-py3-none-any.whl (395 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 395.9/395.9 KB 1.9 MB/s eta 0:00:00
+Collecting packaging==24.1
+  Downloading packaging-24.1-py3-none-any.whl (53 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 54.0/54.0 KB 487.2 kB/s eta 0:00:00
+Collecting pandas==2.3.1
+  Downloading pandas-2.3.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (12.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.3/12.3 MB 1.5 MB/s eta 0:00:00
+Collecting pillow==11.0.0
+  Downloading pillow-11.0.0-cp310-cp310-manylinux_2_28_x86_64.whl (4.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.4/4.4 MB 1.1 MB/s eta 0:00:00
+Collecting platformdirs==4.3.8
+  Downloading platformdirs-4.3.8-py3-none-any.whl (18 kB)
+Collecting pooch==1.8.2
+  Downloading pooch-1.8.2-py3-none-any.whl (64 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 64.6/64.6 KB 631.4 kB/s eta 0:00:00
+Collecting primepy==1.3
+  Downloading primePy-1.3-py3-none-any.whl (4.0 kB)
+Collecting propcache==0.3.2
+  Downloading propcache-0.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (198 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 198.3/198.3 KB 1.0 MB/s eta 0:00:00
+Collecting protobuf==6.31.1
+  Downloading protobuf-6.31.1-cp39-abi3-manylinux2014_x86_64.whl (321 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 321.1/321.1 KB 1.1 MB/s eta 0:00:00
+Collecting pyannote-audio==3.3.2
+  Downloading pyannote.audio-3.3.2-py2.py3-none-any.whl (898 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 898.7/898.7 KB 1.3 MB/s eta 0:00:00
+Collecting pyannote-core==5.0.0
+  Downloading pyannote.core-5.0.0-py3-none-any.whl (58 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 58.5/58.5 KB 458.5 kB/s eta 0:00:00
+Collecting pyannote-database==5.1.3
+  Downloading pyannote.database-5.1.3-py3-none-any.whl (48 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.1/48.1 KB 526.1 kB/s eta 0:00:00
+Collecting pyannote-metrics==3.2.1
+  Downloading pyannote.metrics-3.2.1-py3-none-any.whl (51 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 51.4/51.4 KB 591.0 kB/s eta 0:00:00
+Collecting pyannote-pipeline==3.0.1
+  Downloading pyannote.pipeline-3.0.1-py3-none-any.whl (31 kB)
+Collecting pycparser==2.22
+  Downloading pycparser-2.22-py3-none-any.whl (117 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 117.6/117.6 KB 761.3 kB/s eta 0:00:00
+Collecting pygments==2.19.2
+  Downloading pygments-2.19.2-py3-none-any.whl (1.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 1.2 MB/s eta 0:00:00
+Collecting pyparsing==3.2.3
+  Downloading pyparsing-3.2.3-py3-none-any.whl (111 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 111.1/111.1 KB 565.5 kB/s eta 0:00:00
+Collecting python-dateutil==2.9.0.post0
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 229.9/229.9 KB 911.3 kB/s eta 0:00:00
+Collecting pytorch-lightning==2.5.2
+  Downloading pytorch_lightning-2.5.2-py3-none-any.whl (825 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 825.4/825.4 KB 1.2 MB/s eta 0:00:00
+Collecting pytorch-metric-learning==2.8.1
+  Downloading pytorch_metric_learning-2.8.1-py3-none-any.whl (125 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 125.9/125.9 KB 835.6 kB/s eta 0:00:00
+Collecting pytz==2025.2
+  Downloading pytz-2025.2-py2.py3-none-any.whl (509 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 509.2/509.2 KB 1.3 MB/s eta 0:00:00
+Collecting pyyaml==6.0.2
+  Downloading PyYAML-6.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (751 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 751.2/751.2 KB 1.0 MB/s eta 0:00:00
+Collecting regex==2024.11.6
+  Downloading regex-2024.11.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (781 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 781.7/781.7 KB 1.0 MB/s eta 0:00:00
+Collecting requests==2.28.1
+  Downloading requests-2.28.1-py3-none-any.whl (62 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.8/62.8 KB 442.2 kB/s eta 0:00:00
+Collecting rich==14.0.0
+  Downloading rich-14.0.0-py3-none-any.whl (243 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 243.2/243.2 KB 943.8 kB/s eta 0:00:00
+Collecting ruamel-yaml==0.18.14
+  Downloading ruamel.yaml-0.18.14-py3-none-any.whl (118 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 118.6/118.6 KB 497.7 kB/s eta 0:00:00
+Collecting ruamel-yaml-clib==0.2.12
+  Downloading ruamel.yaml.clib-0.2.12-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (722 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 722.2/722.2 KB 781.2 kB/s eta 0:00:00
+Collecting scikit-learn==1.7.1
+  Downloading scikit_learn-1.7.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (9.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 9.7/9.7 MB 923.2 kB/s eta 0:00:00
+Collecting scipy==1.15.3
+  Downloading scipy-1.15.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (37.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 37.7/37.7 MB 1.3 MB/s eta 0:00:00
+Collecting semver==3.0.4
+  Downloading semver-3.0.4-py3-none-any.whl (17 kB)
+Collecting sentencepiece==0.2.0
+  Downloading sentencepiece-0.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 1.5 MB/s eta 0:00:00
+Collecting setuptools==70.2.0
+  Downloading setuptools-70.2.0-py3-none-any.whl (930 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 930.8/930.8 KB 1.5 MB/s eta 0:00:00
+Collecting shellingham==1.5.4
+  Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+Collecting six==1.17.0
+  Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Collecting sortedcontainers==2.4.0
+  Downloading sortedcontainers-2.4.0-py2.py3-none-any.whl (29 kB)
+Collecting soundfile==0.13.1
+  Downloading soundfile-0.13.1-py2.py3-none-manylinux_2_28_x86_64.whl (1.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 1.6 MB/s eta 0:00:00
+Collecting soxr==0.5.0.post1
+  Downloading soxr-0.5.0.post1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (252 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 252.8/252.8 KB 621.8 kB/s eta 0:00:00
+Collecting speechbrain==1.0.3
+  Downloading speechbrain-1.0.3-py3-none-any.whl (864 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 864.1/864.1 KB 1.6 MB/s eta 0:00:00
+Collecting sqlalchemy==2.0.41
+  Downloading sqlalchemy-2.0.41-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.2/3.2 MB 2.0 MB/s eta 0:00:00
+Collecting sympy==1.13.3
+  Downloading sympy-1.13.3-py3-none-any.whl (6.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.2/6.2 MB 2.0 MB/s eta 0:00:00
+Collecting tabulate==0.9.0
+  Downloading tabulate-0.9.0-py3-none-any.whl (35 kB)
+Collecting tensorboardx==2.6.4
+  Downloading tensorboardx-2.6.4-py3-none-any.whl (87 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.2/87.2 KB 471.2 kB/s eta 0:00:00
+Collecting threadpoolctl==3.6.0
+  Downloading threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
+Collecting tokenizers==0.13.3
+  Downloading tokenizers-0.13.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (7.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.8/7.8 MB 610.5 kB/s eta 0:00:00
+Collecting tomli==2.2.1
+  Downloading tomli-2.2.1-py3-none-any.whl (14 kB)
+ERROR: Could not find a version that satisfies the requirement torch==2.7.1+cu118 (from versions: 1.11.0, 1.12.0, 1.12.1, 1.13.0, 1.13.1, 2.0.0, 2.0.1, 2.1.0, 2.1.1, 2.1.2, 2.2.0, 2.2.1, 2.2.2, 2.3.0, 2.3.1, 2.4.0, 2.4.1, 2.5.0, 2.5.1, 2.6.0, 2.7.0, 2.7.1)
+ERROR: No matching distribution found for torch==2.7.1+cu118
+📦 Установка torch-пакетов...
+Looking in links: /mnt/d/vm/wsl2/audio-lora-builder/temp/pip
+ERROR: Could not find a version that satisfies the requirement aiohappyeyeballs==2.6.1 (from versions: none)
+ERROR: No matching distribution found for aiohappyeyeballs==2.6.1
+WARNING: Package(s) not found: whisperx
+❌ whisperx==3.3.1 установить не удалось
+WARNING: Package(s) not found: transformers
+❌ transformers==4.28.1 установить не удалось
+WARNING: Package(s) not found: librosa
+❌ librosa==0.10.0 установить не удалось
+❌ СТОП ТЕСТ
+PS D:\VM\WSL2\audio-lora-builder>
 #>
+
+
+
+
 
