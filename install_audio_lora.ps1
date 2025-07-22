@@ -1,4 +1,4 @@
-﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.1"
+﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.3"
 # === install_audio_lora.ps1 ===
 
 # === Настройка путей ===
@@ -28,36 +28,54 @@ function Convert-WindowsPathToWsl {
 }
 function Get-WhlInventory($WhlDir, $DistroName) {
     $Inventory = @{}
+	if (-not (Test-Path $WhlDir)) { New-Item -ItemType Directory -Path $WhlDir | Out-Null }
     $WhlFiles = Get-ChildItem -Path $WhlDir -Filter *.whl
 
+	#Счетчик для процента прогресса
+	$step = 1
+	$total = $WhlFiles.Count
+	
     foreach ($whl in $WhlFiles) {
-        # Путь до исходного файла
-        $originalPath = $whl.FullName.Replace('\', '/')
+		
+		#Write-Host $name=$version
+		#Процент прогресса
+		$percent = [math]::Round(($step / $total) * 100)
+		Write-Host -NoNewline "`r📦 Чтение .whl файлов: $percent%"
+		$step++                                                     
 
-        # Временно переименовываем файл с расширением .zip
-		$tempZipPath = [System.IO.Path]::ChangeExtension($whl.FullName, ".zip")
-		Move-Item -Path $whl.FullName -Destination $tempZipPath -Force
 
+
+        # Преобразуем путь в WSL-совместимый 
+		$whlPathWsl = Convert-WindowsPathToWsl $whl.FullName
 
         # Извлекаем Name и Version из METADATA файла
-        $cmd = "unzip -p '$tempZipPath' '*/METADATA' | grep -E '^(Name|Version):'"
+		$cmd = "unzip -p '$whlPathWsl' '*.dist-info/METADATA' | grep -E '^(Name|Version):'"
         $meta = wsl -d $DistroName -- bash -c $cmd
-
-        # Переименовываем обратно .zip в whl после использования
-		Move-Item -Path $tempZipPath -Destination $whl.FullName -Force
-
 
         # Разбор результата
         $lines = $meta -split "`n"
-        $name = ($lines | Where-Object { $_ -like 'Name:*' }) -replace 'Name:\s*', ''
-        $version = ($lines | Where-Object { $_ -like 'Version:*' }) -replace 'Version:\s*', ''
+       # $name = ($lines | Where-Object { $_ -like 'Name:*' }) -replace 'Name:\s*', ''
+       # $version = ($lines | Where-Object { $_ -like 'Version:*' }) -replace 'Version:\s*', ''
 
+		$name = ($lines | Where-Object { $_ -like 'Name:*' } | Select-Object -First 1) -replace 'Name:\s*', ''
+		$name = $name.ToLower()
+		$version = ($lines | Where-Object { $_ -like 'Version:*' } | Select-Object -First 1) -replace 'Version:\s*', ''
+
+		
         if ($name -and $version) {
             $Inventory["$name==$version"] = $whl.FullName
         }
     }
 
-    return $Inventory
+	Write-Host "`r📦 Чтение .whl файлов завершено.           "
+
+	return $Inventory.GetEnumerator() | ForEach-Object {
+	@{
+		Name    = ($_).Key -split '==' | Select-Object -First 1
+		Version = ($_).Key -split '==' | Select-Object -Skip 1
+		Path    = ($_).Value
+	}
+	}
 }
 
 
@@ -71,30 +89,24 @@ if ($existingDistros -contains $DistroName) {
     $response = Read-Host "⚠️ Дистрибутив '$DistroName' уже существует. Удалить его и переустановить? [Y/N]"
     if ($response -eq "Y") {
         Write-Host "🧹 Удаляем существующий дистрибутив..."
-		wsl --unregister $DistroName; wsl --shutdown
-		Start-Sleep -Seconds 4
-		$wslProcs = Get-Process wsl* -ErrorAction SilentlyContinue
-		if ($wslProcs) {
-			Write-Host "❗ Обнаружены запущенные процессы WSL:"
-			$wslProcs | Format-Table Id, ProcessName -AutoSize
-			Write-Host "⏸ Пожалуйста, остановите WSL перед продолжением (wsl --shutdown) и повторите попытку."
-			exit 1
-		}
-
+		wsl --unregister $DistroName
     } else {
         Write-Host "⏭️ Прерываем установку."
         exit 0
     }
+}
+else {
+	Write-Host "✅ Действующий $DistroName не найден"
 }
 
 # === 2. Получение rootfs ===
 Write-Host "`n2. 📦 Поиск базового или финального rootfs"
 if (Test-Path $FinalRootfs) {
     $ImportRootfs = $FinalRootfs
-    Write-Host "`n✅ Найден финальный rootfs: $FinalRootfs"
+    Write-Host "✅ Найден финальный rootfs: $FinalRootfs"
 } elseif (Test-Path $BaseRootfs) {
     $ImportRootfs = $BaseRootfs
-    Write-Host "`n✅ Найден базовый rootfs: $BaseRootfs"
+    Write-Host "✅ Найден базовый rootfs: $BaseRootfs"
 } else {
 	
 # === 2.1. Получение базового ubuntu2204_rootfs.tar.gz через распаковку .appx ===
@@ -162,10 +174,10 @@ wsl -d $DistroName -- bash -c "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"
 
 
 # === 5. Установка зависимостей ===
-Write-Host "5. 📦 === Установка зависимостей ==="
+Write-Host "`n5. 📦 === Установка зависимостей ==="
 
-# 5.1. Установка python3-pip и ffmpeg (и dpkg-dev для генерации Packages.gz для установки оффлайн с зависимостями через локальный репозиторий)
-Write-Host "`n5.1 📦 Установка python3-pip и ffmpeg (и dpkg-dev для генерации Packages.gz для установки оффлайн с зависимостями через локальный репозиторий и unzip для анализа whl файлов)"
+# 5.1. Установка python3-pip, ffmpeg, dpkg-dev, unzip  (ffmpeg - для конвертации аудио, dpkg-dev для генерации Packages.gz, unzip для распаковки архивов pip пакетов)
+Write-Host "5.1 📦 Установка python3-pip, ffmpeg, dpkg-dev, unzip"
 $AptCacheWin = Join-Path $TempDir "apt"
 $AptCacheWsl = Convert-WindowsPathToWsl $AptCacheWin
 $Pkgs = @("python3-pip", "ffmpeg", "dpkg-dev", "unzip")
@@ -221,7 +233,7 @@ if ($Missing.Count -eq 0) {
 						
 
 		# Явная загрузка .deb после установки (гарантированное сохранение установленных версий)
-		wsl -d $DistroName -- bash -c "sudo apt-get install --download-only -y $($Pkgs -join ' ') dpkg-dev --reinstall"				                   
+		wsl -d $DistroName -- bash -c "sudo apt-get install --download-only -y $($Pkgs -join ' ') --reinstall"				                   
 									   
 		# Создание каталога и перемещение .deb в temp/apt
 		New-Item -ItemType Directory -Force -Path $AptCacheWin | Out-Null
@@ -230,6 +242,8 @@ if ($Missing.Count -eq 0) {
 		# Генерация Packages.gz
 		wsl -d $DistroName -- bash -c "cd '$AptCacheWsl' && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
 
+		# Очистка кэша после скачивания
+		wsl -d $DistroName -- bash -c "sudo rm -f /var/cache/apt/archives/*.deb"
 		Write-Host "✅ Скачанные .deb и Packages.gz экспортированы в temp/apt"
 	}
 	Write-Host "📦 Проверка результата установки пакетов"
@@ -245,7 +259,7 @@ if ($Missing.Count -eq 0) {
 }
 
 
-# === 5.2 Установка CUDA Runtime 12.6 (через apt-get --download-only, оффлайн) v10 ===
+# === 5.2 Установка CUDA Runtime 12.6 ===
 Write-Host "`n5.2 📦 Установка CUDA Runtime 12.6 (через apt-get --download-only, оффлайн) v10"
 
 # Пути
@@ -359,8 +373,8 @@ if ($Missing.Count -eq 0) {
 
 
 
-# === 5.3 Установка cuDNN v6 (официальный .deb + apt, с полной очисткой) ===
-Write-Host "5.3 📦 Установка cuDNN v6 (через .deb + apt, с удалением репо)"
+# === 5.3 Установка cuDNN ===
+Write-Host "5.3 📦 Установка cuDNN"
 
 # Пути
 $LocalCuDnnDebs = Join-Path $TempDir "cudnn_debs"
@@ -447,7 +461,7 @@ else {
 
 
 
-# === 5.4 Установка Python-библиотек (faster-whisper или torch + whisperx) ===
+	
 Write-Host "`n5.4 📦 Установка Python-библиотек (torch, $WhisperImpl) из temp\pip (Windows)"
 $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
@@ -477,117 +491,117 @@ foreach ($pkg in $PyWheels) {
 	}
 }
 
-# Проверяем наличие ранее скаченных пакетов .whl в temp/pip
-#$PyWheelsToDownload = @()
-$WhlCache = Get-WhlInventory -WhlDir $PipCacheWin -DistroName $DistroName
-foreach ($pkg in $PyWheelsMissing) {
-    $match = $WhlCache | Where-Object { $_.Name -eq $pkg.Name }
-    if (-not $match) {
-        Write-Host "⬇️ В temp/pip $($pkg.Name) не найден"
-        #$PyWheelsToDownload += $pkg
-    } else {
-        Write-Host "✅ $($pkg.Name) уже ранее был скачен в temp/pip"
-    }
+if ($PyWheelsMissing.Count -gt 0) {
+
+	#Удаляем кэш который мог быть в WSL
+	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
+	# Проверяем наличие ранее скаченных пакетов .whl в temp/pip
+	$PyWheelsToDownload = @()
+	$WhlCache = Get-WhlInventory -WhlDir $PipCacheWin -DistroName $DistroName
+
+
+	foreach ($pkg in $PyWheelsMissing) {
+		$match = $WhlCache | Where-Object { "$($_['Name'])==$($_['Version'])" -eq $pkg.Name.ToLower() }
+		if (-not $match) {
+			Write-Host "⬇️ В temp/pip $($pkg.Name) не найден"
+			$PyWheelsToDownload += $pkg
+		} else {
+			Write-Host "✅ $($pkg.Name) уже ранее был скачен в temp/pip"
+		}
+	}
+
+
+
+
+
+	#Устанавливаем uv
+	$UvWheel = Get-ChildItem $PipCacheWin -Filter "uv-*.whl" | Select-Object -First 1
+	if (-not $UvWheel) {
+		wsl -d $DistroName -- bash -c "pip download uv -d '$PipCacheWsl'"
+		$UvWheel = Get-ChildItem $PipCacheWin -Filter "uv-*.whl" | Select-Object -First 1
+	}
+	wsl -d $DistroName -- bash -c "pip install '$($PipCacheWsl)/$($UvWheel.Name)' --no-index --find-links='$PipCacheWsl' > /dev/null 2>&1"
+
+
+
+
+	
+	@("torch", "pypi") | ForEach-Object {
+    $group = $_
+
+    $inPathWin  = Join-Path $PipCacheWin  "requirements_${group}.in"
+    $txtPathWin = Join-Path $PipCacheWin  "requirements_${group}.txt"
+    $inPathWsl  = Convert-WindowsPathToWsl $inPathWin
+    $txtPathWsl = Convert-WindowsPathToWsl $txtPathWin
+
+    $packages = $PyWheels | Where-Object {
+        $_.Source -eq $group -and $_.Impl -eq $WhisperImpl
+    } | ForEach-Object { $_['Name'] }
+
+    if ($packages.Count -eq 0) { return }
+
+    $packages | Set-Content -Encoding UTF8 -Path $inPathWin
+
+
+
+	
+	$toDownload = $PyWheelsToDownload | Where-Object { $_.Source -eq $group }
+	if ((Test-Path $txtPathWin) -and ($toDownload.Count -eq 0)) {
+		Write-Host "`n📄 Все ключевые пакеты WHL по источнику $group скачены и файл requirements_${group}.txt уже есть, Генерация нового requirements_${group}.txt не требуется..."
+		} else {
+				$compileCmd = "uv pip compile '$inPathWsl' --output-file '$txtPathWsl'"
+				if ($group -eq "torch") {
+					$compileCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}		
+				Write-Host "`n📄 Генерация requirements_${group}.txt..."
+				wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
+				Write-Host "🌐 Загрузка зависимостей $group..."
+				$downloadCmd = "pip download -r '$txtPathWsl' -d '$PipCacheWsl'"
+				if ($group -eq "torch") {
+					$downloadCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}
+				wsl -d $DistroName -- bash -c "$downloadCmd"
+			}
+		Write-Host "📦 Установка $group-пакетов..."
+		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$txtPathWsl'"
+	}
+
+
+
+
+	# Компилируем .tar.gz и .zip → .whl
+	$Archives = Get-ChildItem -Path $PipCacheWin -Include *.tar.gz,*.zip -Recurse
+	foreach ($pkg in $Archives) {
+		$pkgPathWsl = Convert-WindowsPathToWsl $pkg.FullName
+		Write-Host "🛠️ Компиляция: $($pkg.Name)"
+		wsl -d $DistroName -- bash -c "pip wheel '$pkgPathWsl' --no-deps --wheel-dir '$PipCacheWsl' > /dev/null 2>&1"
+		Remove-Item $pkg.FullName -Force
+	}
+
+	#Удаляем кэш который накопился в WSL
+	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
+
+	#Проверить установились ли пакеты .whl в WSL после фазы установки пакетов
+	foreach ($pkg in $PyWheels) {
+		$IsForThisImpl = ($pkg.Impl -eq "all" -or $pkg.Impl -eq $WhisperImpl)
+		if ($IsForThisImpl) {
+
+			$DepName = $pkg.Name -split '==|\+' | Select-Object -First 1
+			$DepVersion = $pkg.Name -split '==|\+' | Select-Object -Skip 1 | Select-Object -First 1
+			$IsInstalled = wsl -d $DistroName -- bash -c "pip show $DepName > /dev/null && echo ok"
+			if ($IsInstalled -eq "ok") {
+				Write-Host "✅ $($pkg.Name) удалось установить — всё хорошо"
+			} else {
+				Write-Host "❌ $($pkg.Name) установить не удалось"
+			}
+		}
+	}
+
+
 }
-
-
-
-
-
-######################Временно не утверждено
-
-
-# Генерация requirements_*.in по группам из $PyWheelsMissing
-$PyTorchWheelsMissing = $PyWheelsMissing | Where-Object { $_.Source -eq "torch" } 
-$PypiWheelsMissing  = $PyWheelsMissing | Where-Object { $_.Source -eq "pypi" } 
-
-# Пути к *.in/.txt (Windows)
-$ReqInTorchPathWin  = Join-Path $PipCacheWin "requirements_torch.in"
-$ReqTxtTorchPathWin = Join-Path $PipCacheWin "requirements_torch.txt"
-$ReqInPyPiPathWin   = Join-Path $PipCacheWin "requirements_pypi.in"
-$ReqTxtPyPiPathWin  = Join-Path $PipCacheWin "requirements_pypi.txt"  
-
-# Пути к *.in/.txt (WSL)
-$ReqInTorchPathWsl = Convert-WindowsPathToWsl $ReqInTorchPathWin
-$ReqTxtTorchPathWsl = Convert-WindowsPathToWsl $ReqTxtTorchPathWin
-$ReqInPyPiPathWsl = Convert-WindowsPathToWsl $ReqInPyPiPathWin
-$ReqTxtPyPiPathWsl = Convert-WindowsPathToWsl $ReqTxtPyPiPathWin
-
-
-
-# Создаём *.in и компилируем *.txt через uv внутри WSL
-if ($PyTorchWheelsMissing.Count -gt 0) {
-	#Получаем список пакетов torch из $PyWheels и записываем в файл
-	$PyWheelsTorch = $PyWheels | Where-Object { $_.Source -eq "torch" } | Select-Object -ExpandProperty Name
-    $PyWheelsTorch | Set-Content -Encoding UTF8 -Path $ReqInTorchPathWin
-    wsl -d $DistroName -- bash -c "uv pip compile '$ReqInTorchPathWsl' --output-file '$ReqTxtTorchPathWsl' --extra-index-url https://download.pytorch.org/whl/cu118"
+else {
+	Write-Host "✅ Все необходимые Python-библиотеки установлены"
 }
-
-if ($PypiWheelsMissing.Count -gt 0) {
-	#Получаем список пакетов pypi из $PyWheels и записываем в файл
-	$PyWheelsPyPi = $PyWheels | Where-Object { $_.Source -eq "pypi" } | Select-Object -ExpandProperty Name
-    $PyWheelsPyPi | Set-Content -Encoding UTF8 -Path $ReqInPyPiPathWin
-    wsl -d $DistroName -- bash -c "uv pip compile '$ReqInPyPiPathWsl' --output-file '$ReqTxtPyPiPathWsl'"
-}
-
-Write-Host "❌ СТОП ТЕСТ"; exit 1
-
-###############################
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#Скачиваем отсутствующие пакеты .whl в temp/pip
-$TorchList = ($PyWheelsToDownload | Where-Object { $_.Source -eq "torch" }).Name -join ' '
-$PyPiList  = ($PyWheelsToDownload | Where-Object { $_.Source -eq "pypi" }).Name -join ' '
-
-if ($TorchList) {
-	Write-Host "⬇️ Скачиваем с PyTorch: $($TorchList) в temp/pip."
-	wsl -d $DistroName -- bash -c "pip download $TorchList -f https://download.pytorch.org/whl/torch_stable.html -d '$PipCacheWsl'"
-}
-if ($PyPiList) {
-	Write-Host "⬇️ Скачиваем с PyPi: $($PyPiList) в temp/pip."
-	wsl -d $DistroName -- bash -c "pip download $PyPiList -d '$PipCacheWsl'"
-}
-
-#Устанавливаем из temp/pip
-$InstallLine = ($PyWheelsMissing).Name -join ' '
-if ($InstallLine) {
-	Write-Host "📦 Устанавливаем Python-библиотеки: $InstallLine"
-	wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' $InstallLine"
-} else {
-	Write-Host "✅ Все Python-библиотеки уже установлены — установка не требуется."
-}
-
-# === 6. Создание снапшота ===
-Write-Host "`n8. 💽 Создаём rootfs-снапшот дистрибутива..."
-wsl --export $DistroName $FinalRootfs
-Write-Host "✅ Снапшот сохранён: $FinalRootfs"
 
 
 # === 5.5 Предзагрузка и кэширование модели Whisper large-v3 (faster-whisper) для CPU и GPU ===
@@ -623,7 +637,7 @@ except Exception as e:
 }
 if ($WhisperImpl -eq "whisperx") {
 	$ModelFullName = "WhisperX large-v3"
-	$WhisperCacheSearchPattern = "large-v3.pt"	
+	$WhisperCacheSearchPattern = "*whisper*large*v3*"	
 	$PythonLoadScript = @"
 import os
 os.environ['HF_HOME'] = r'$ModelCacheWinWsl'
@@ -631,12 +645,12 @@ os.environ['HF_HOME'] = r'$ModelCacheWinWsl'
 import whisperx
 
 print('(python) 🔄 Кэшируем WhisperX large-v3 на CPU...')
-model = whisperx.load_model("large-v3", device="cpu")
+model = whisperx.load_model("large-v3", device="cpu", compute_type='int8')
 print('(python) ✅ Модель WhisperX закэширована (CPU).')
 
 try:
     print('(python) 🔄 Кэшируем WhisperX large-v3 на GPU (если поддерживается)...')
-    model = whisperx.load_model("large-v3", device="cuda")
+	model = whisperx.load_model("large-v3", device="cuda", compute_type='int8_float16')
     print('(python) ✅ Модель WhisperX закэширована (GPU).')
 except Exception as e:
 	print('(python) ⚠️ Не удалось закэшировать WhisperX для GPU: ' + str(e))
@@ -713,7 +727,7 @@ Write-Host "✅ Конфигурация сохранена в WSL: $WSL_ENV_FIL
 
 # === 6. Создание снапшота ===
 Write-Host "`n8. 💽 Создаём rootfs-снапшот дистрибутива..."
-#wsl --export $DistroName $FinalRootfs
+wsl --export $DistroName $FinalRootfs
 Write-Host "✅ Снапшот сохранён: $FinalRootfs"
 
 # === 7. Инструкция ===

@@ -22,6 +22,7 @@ function Convert-WindowsPathToWsl {
 }
 function Get-WhlInventory($WhlDir, $DistroName) {
     $Inventory = @{}
+	if (-not (Test-Path $WhlDir)) { New-Item -ItemType Directory -Path $WhlDir | Out-Null }
     $WhlFiles = Get-ChildItem -Path $WhlDir -Filter *.whl
 
 	#Счетчик для процента прогресса
@@ -107,9 +108,11 @@ foreach ($pkg in $PyWheels) {
 }
 
 if ($PyWheelsMissing.Count -gt 0) {
-	
+
+	#Удаляем кэш который мог быть в WSL
+	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
 	# Проверяем наличие ранее скаченных пакетов .whl в temp/pip
-	#$PyWheelsToDownload = @()
+	$PyWheelsToDownload = @()
 	$WhlCache = Get-WhlInventory -WhlDir $PipCacheWin -DistroName $DistroName
 
 
@@ -117,27 +120,13 @@ if ($PyWheelsMissing.Count -gt 0) {
 		$match = $WhlCache | Where-Object { "$($_['Name'])==$($_['Version'])" -eq $pkg.Name.ToLower() }
 		if (-not $match) {
 			Write-Host "⬇️ В temp/pip $($pkg.Name) не найден"
-			#$PyWheelsToDownload += $pkg
+			$PyWheelsToDownload += $pkg
 		} else {
 			Write-Host "✅ $($pkg.Name) уже ранее был скачен в temp/pip"
 		}
 	}
 
-	# Генерация requirements_*.in по группам из $PyWheelsMissing
-	$PyTorchWheelsMissing = $PyWheelsMissing | Where-Object { $_.Source -eq "torch" } 
-	$PypiWheelsMissing  = $PyWheelsMissing | Where-Object { $_.Source -eq "pypi" } 
 
-	# Пути к *.in/.txt (Windows)
-	$ReqInTorchPathWin  = Join-Path $PipCacheWin "requirements_torch.in"
-	$ReqTxtTorchPathWin = Join-Path $PipCacheWin "requirements_torch.txt"
-	$ReqInPyPiPathWin   = Join-Path $PipCacheWin "requirements_pypi.in"
-	$ReqTxtPyPiPathWin  = Join-Path $PipCacheWin "requirements_pypi.txt"  
-
-	# Пути к *.in/.txt (WSL)
-	$ReqInTorchPathWsl = Convert-WindowsPathToWsl $ReqInTorchPathWin
-	$ReqTxtTorchPathWsl = Convert-WindowsPathToWsl $ReqTxtTorchPathWin
-	$ReqInPyPiPathWsl = Convert-WindowsPathToWsl $ReqInPyPiPathWin
-	$ReqTxtPyPiPathWsl = Convert-WindowsPathToWsl $ReqTxtPyPiPathWin
 
 
 
@@ -151,37 +140,49 @@ if ($PyWheelsMissing.Count -gt 0) {
 
 
 
-	# Создаём *.in и компилируем *.txt через uv внутри WSL
-	if ($PyTorchWheelsMissing.Count -gt 0) {
-		
-		#Получаем список пакетов torch и записываем в файл
-		$PyWheelsTorch = $PyWheels | Where-Object { ($_.Source -eq "torch") -and ($_.Impl -eq $WhisperImpl) } | ForEach-Object { $_['Name'] }
-		#Запись in файла
-		$PyWheelsTorch | Set-Content -Encoding UTF8 -Path $ReqInTorchPathWin
-		#Генерация txt файла по in файлу
-		wsl -d $DistroName -- bash -c "uv pip compile '$ReqInTorchPathWsl' --output-file '$ReqTxtTorchPathWsl' --extra-index-url https://download.pytorch.org/whl/cu118 > /dev/null 2>&1"
-		#Качаем пакеты по txt файлу
-		Write-Host "🌐 Загрузка зависимостей PyTorch..."
-		wsl -d $DistroName -- bash -c "uv pip download -r '$ReqTxtTorchPathWsl' -d '$PipCacheWsl'"
-		# Установка torch-пакетов
-		Write-Host "`n📦 Установка PyTorch-библиотек из temp/pip..."
-		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$ReqTxtTorchPathWsl'"
+
+	
+	@("torch", "pypi") | ForEach-Object {
+    $group = $_
+
+    $inPathWin  = Join-Path $PipCacheWin  "requirements_${group}.in"
+    $txtPathWin = Join-Path $PipCacheWin  "requirements_${group}.txt"
+    $inPathWsl  = Convert-WindowsPathToWsl $inPathWin
+    $txtPathWsl = Convert-WindowsPathToWsl $txtPathWin
+
+    $packages = $PyWheels | Where-Object {
+        $_.Source -eq $group -and $_.Impl -eq $WhisperImpl
+    } | ForEach-Object { $_['Name'] }
+
+    if ($packages.Count -eq 0) { return }
+
+    $packages | Set-Content -Encoding UTF8 -Path $inPathWin
+
+
+
+	
+	$toDownload = $PyWheelsToDownload | Where-Object { $_.Source -eq $group }
+	if ((Test-Path $txtPathWin) -and ($toDownload.Count -eq 0)) {
+		Write-Host "`n📄 Все ключевые пакеты WHL по источнику $group скачены и файл requirements_${group}.txt уже есть, Генерация нового requirements_${group}.txt не требуется..."
+		} else {
+				$compileCmd = "uv pip compile '$inPathWsl' --output-file '$txtPathWsl'"
+				if ($group -eq "torch") {
+					$compileCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}		
+				Write-Host "`n📄 Генерация requirements_${group}.txt..."
+				wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
+				Write-Host "🌐 Загрузка зависимостей $group..."
+				$downloadCmd = "pip download -r '$txtPathWsl' -d '$PipCacheWsl'"
+				if ($group -eq "torch") {
+					$downloadCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
+				}
+				wsl -d $DistroName -- bash -c "$downloadCmd"
+			}
+		Write-Host "📦 Установка $group-пакетов..."
+		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$txtPathWsl'"
 	}
 
-	if ($PypiWheelsMissing.Count -gt 0) {
-		#Получаем список пакетов pypi из $PyWheels и записываем в файл
-		$PyWheelsPyPi  = $PyWheels | Where-Object { ($_.Source -eq "pypi")  -and ($_.Impl -eq $WhisperImpl) } | ForEach-Object { $_['Name'] }
-		#Запись in файла
-		$PyWheelsPyPi | Set-Content -Encoding UTF8 -Path $ReqInPyPiPathWin
-		#Генерация txt файла по in файлу
-		wsl -d $DistroName -- bash -c "uv pip compile '$ReqInPyPiPathWsl' --output-file '$ReqTxtPyPiPathWsl' > /dev/null 2>&1"
-		#Качаем пакеты по txt файлу
-		Write-Host "🌐 Загрузка зависимостей PyPi..."
-		wsl -d $DistroName -- bash -c "uv pip download -r '$ReqTxtPyPiPathWsl' -d '$PipCacheWsl'"
-		# Установка pypi-пакетов
-		Write-Host "`n📦 Установка PyPi-библиотек из temp/pip..."
-		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$ReqTxtPyPiPathWsl'"		
-	}
+
 
 
 	# Компилируем .tar.gz и .zip → .whl
@@ -193,7 +194,8 @@ if ($PyWheelsMissing.Count -gt 0) {
 		Remove-Item $pkg.FullName -Force
 	}
 
-
+	#Удаляем кэш который накопился в WSL
+	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
 
 	#Проверить установились ли пакеты .whl в WSL после фазы установки пакетов
 	foreach ($pkg in $PyWheels) {
@@ -212,15 +214,6 @@ if ($PyWheelsMissing.Count -gt 0) {
 	}
 
 
-	########################
-	
-	
-	
-	#Следующий блок
-	###############################
-
-
-
 }
 else {
 	Write-Host "✅ Все необходимые Python-библиотеки установлены"
@@ -230,7 +223,102 @@ else {
 
 	Write-Host "❌ СТОП ТЕСТ"; exit 1
 <#
-uv надо устанавливать до генерации req txt как whl пакет!
+PS D:\VM\WSL2\audio-lora-builder> .\install_audio_lora.ps1
 
-wsl -d audio-lora -- bash -c "uv pip compile '/mnt/d/vm/wsl2/audio-lora-builder/temp/pip/requirements_torch.in' --output-file '/mnt/d/vm/wsl2/audio-lora-builder/temp/pip/requirements_torch.txt' --extra-index-url https://download.pytorch.org/whl/cu118 > /dev/null 2>&1"
+Версия скрипта install_audio_lora.ps1 4.2
+
+1. 🔍 Проверяем наличие WSL-дистрибутива 'audio-lora'...
+
+2. 📦 Поиск базового или финального rootfs
+
+✅ Найден финальный rootfs: D:\VM\WSL2\audio-lora-builder\rootfs\audio_lora_rootfs.tar.gz
+
+3. 💽 Импортируем WSL-дистрибутив из 'D:\VM\WSL2\audio-lora-builder\rootfs\audio_lora_rootfs.tar.gz'...
+Операция успешно завершена.
+
+4. 🌐 Восстанавливаем DNS в WSL...
+5. 📦 === Установка зависимостей ===
+
+5.1 📦 Установка python3-pip, ffmpeg, dpkg-dev, unzip
+✅ python3-pip уже установлен, пропускаем.
+✅ ffmpeg уже установлен, пропускаем.
+✅ dpkg-dev уже установлен, пропускаем.
+✅ unzip уже установлен, пропускаем.
+📦 Все пакеты уже установлены. Установка не требуется.
+
+5.2 📦 Установка CUDA Runtime 12.6 (через apt-get --download-only, оффлайн) v10
+✅ libcublas-12-6 уже установлен, пропускаем.
+✅ libcublas-dev-12-6 уже установлен, пропускаем.
+✅ cuda-toolkit-12-config-common уже установлен, пропускаем.
+✅ cuda-toolkit-12-6-config-common уже установлен, пропускаем.
+✅ cuda-toolkit-config-common уже установлен, пропускаем.
+✅ cuda-runtime-12-6 уже установлен, пропускаем.
+✅ Весь CUDA Runtime уже установлен. Пропускаем установку CUDA.
+5.3 📦 Установка cuDNN
+✅ cuDNN уже установлен в WSL — пропускаем установку.
+
+5.4 📦 Установка Python-библиотек (torch, whisperx) из temp\pip (Windows)
+✅ whisperx==3.3.1 уже установлен — пропускаем
+✅ transformers==4.28.1 уже установлен — пропускаем
+✅ librosa==0.10.0 уже установлен — пропускаем
+✅ Все необходимые Python-библиотеки установлены
+
+5.5 🧠 Предзагрузка и кэширование модели whisperx для CPU и GPU
+📦 Определение переменных
+📦 Проверка установленного кэша модели WhisperX large-v3 в WSL...
+📦 Кэш в WSL не найден, ищем кэш в temp: D:\VM\WSL2\audio-lora-builder\temp\huggingface\whisperx
+📦 Кэш модели WhisperX large-v3 не найден. Скачиваем модель с huggingface
+(python) 🔄 Кэшируем WhisperX large-v3 на CPU...
+preprocessor_config.json: 100%|████████████████████████████████████████████████████████| 340/340 [00:00<00:00, 4.62MB/s]
+config.json: 2.39kB [00:00, 18.0MB/s]                                                       | 0.00/3.09G [00:00<?, ?B/s]
+vocabulary.json: 1.07MB [00:00, 9.46MB/s]
+tokenizer.json: 2.48MB [00:00, 12.5MB/s]]
+model.bin: 100%|███████████████████████████████████████████████████████████████████| 3.09G/3.09G [06:25<00:00, 8.01MB/s]
+Traceback (most recent call last):7MB/s]
+  File "/mnt/d/vm/wsl2/audio-lora-builder/temp/preload_whisperx.py", line 7, in <module>
+    model = whisperx.load_model("large-v3", device="cpu")
+  File "/usr/local/lib/python3.10/dist-packages/whisperx/asr.py", line 325, in load_model
+    model = model or WhisperModel(whisper_arch,
+  File "/usr/local/lib/python3.10/dist-packages/faster_whisper/transcribe.py", line 634, in __init__
+    self.model = ctranslate2.models.Whisper(
+ValueError: Requested float16 compute type, but the target device or backend do not support efficient float16 computation.
+📦 Кэш модели WhisperX large-v3 скачен. Копируем в WSL...
+✅ Кэш скачен и скопирован Windows => WSL.
+
+
+
+
+
+
+
+
+5.5 🧠 Предзагрузка и кэширование модели whisperx для CPU и GPU
+📦 Определение переменных
+📦 Проверка установленного кэша модели WhisperX large-v3 в WSL...
+find: ‘/root/.cache/huggingface/hub’: No such file or directory
+📦 Кэш в WSL не найден, ищем кэш в temp: D:\VM\WSL2\audio-lora-builder\temp\huggingface\whisperx
+📦 Кэш модели WhisperX large-v3 не найден. Скачиваем модель с huggingface
+(python) 🔄 Кэшируем WhisperX large-v3 на CPU...
+Traceback (most recent call last):
+  File "/mnt/d/vm/wsl2/audio-lora-builder/temp/preload_whisperx.py", line 7, in <module>
+    model = whisperx.load_model("large-v3", device="cpu")
+  File "/usr/local/lib/python3.10/dist-packages/whisperx/asr.py", line 325, in load_model
+    model = model or WhisperModel(whisper_arch,
+  File "/usr/local/lib/python3.10/dist-packages/faster_whisper/transcribe.py", line 634, in __init__
+    self.model = ctranslate2.models.Whisper(
+ValueError: Requested float16 compute type, but the target device or backend do not support efficient float16 computation.
+
+
+
+python3 -c "import whisperx; whisperx.load_model('large-v3', device='cpu', compute_type='int8')"
+
+python3 -c "import whisperx; whisperx.load_model('large-v3', device='cuda', compute_type='int8_float16')"
+
+
+
 #>
+
+
+
+
+
