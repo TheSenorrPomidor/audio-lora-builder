@@ -172,7 +172,7 @@ huggingface-cli login
 
 🔗 pyannote/embedding 👉 https://huggingface.co/pyannote/embedding
 
-🔗 pyannote/voice-activity-detection 👉 https://huggingface.co/pyannote/voice-activity-detection
+🔗 НЕ АКТУАЛЬНО pyannote/voice-activity-detection 👉 https://huggingface.co/pyannote/voice-activity-detection
 
 💡 Без этого загрузка моделей завершится ошибкой Could not download... model is gated.
 
