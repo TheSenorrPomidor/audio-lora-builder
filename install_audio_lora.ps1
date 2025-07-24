@@ -77,9 +77,37 @@ function Get-WhlInventory($WhlDir, $DistroName) {
 	}
 	}
 }
-
-
 <#
+function Ensure-PyannoteAudioCli {
+    Write-Host "🛠️ Проверка наличия CLI-команды pyannote-audio..."
+
+    $TargetPath = "/usr/local/bin/pyannote-audio"
+    $CheckCmd = "test -x '$TargetPath'"
+    $null = wsl -d $DistroName -- bash -c "$CheckCmd"
+    $Exists = $LASTEXITCODE -eq 0
+
+    if ($Exists) {
+        Write-Host "✅ CLI 'pyannote-audio' уже существует. Пропускаем."
+        return
+    }
+
+    Write-Host "⚠️ CLI 'pyannote-audio' не найден. Добавляем вручную..."
+
+    $ScriptContent = @"
+#!/usr/bin/env python3
+from pyannote.audio.cli import main
+
+if __name__ == "__main__":
+    main()
+"@
+
+    $TempWrapper = Join-Path $TempDir "pyannote-audio"
+    $ScriptContent | Set-Content -Encoding UTF8 -Path $TempWrapper
+
+    wsl -d $DistroName -- bash -c "sudo cp /mnt/d/VM/WSL2/audio-lora-builder/temp/pyannote-audio '$TargetPath' && sudo chmod +x '$TargetPath'"
+
+    Write-Host "✅ CLI 'pyannote-audio' создан вручную и установлен в $TargetPath"
+}
 #>
 
 # === 1. Проверка и удаление WSL-дистрибутива ===
@@ -467,10 +495,12 @@ $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
 
 $PyWheels = @(
-  @{ Name = "whisperx==3.3.1";      Source = "torch"; Impl = "whisperx" },
-  @{ Name = "transformers==4.28.1"; Source = "torch"; Impl = "whisperx" },
-  @{ Name = "librosa==0.10.0";      Source = "torch"; Impl = "whisperx" },
-  @{ Name = "faster-whisper";       Source = "pypi";  Impl = "faster-whisper" }
+  @{ Name = "whisperx==3.3.1";       Source = "torch"; Impl = "whisperx" },
+  @{ Name = "transformers==4.28.1";  Source = "torch"; Impl = "whisperx" },
+  @{ Name = "librosa==0.10.0";       Source = "torch"; Impl = "whisperx" },
+  @{ Name = "pyannote-audio==3.3.2"; Source = "torch"; Impl = "whisperx" },
+  @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "whisperx" },
+  @{ Name = "faster-whisper";        Source = "pypi";  Impl = "faster-whisper" }
 
 )
 #Проверить какие пакеты .whl установлены в WSL
@@ -596,7 +626,7 @@ if ($PyWheelsMissing.Count -gt 0) {
 			}
 		}
 	}
-
+	
 
 }
 else {

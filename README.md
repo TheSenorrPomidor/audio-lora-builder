@@ -138,6 +138,48 @@ whisper / whisperx / pyannote.audio
 
 🟢 Установка:
 
+Получить токен
+
+🔐 Активация доступа к моделям pyannote.audio
+Для загрузки моделей диаризации pyannote.audio требуется:
+
+1. 📋 Получить токен Hugging Face
+Зарегистрируйтесь или войдите на https://huggingface.co
+
+Перейдите в настройки токенов
+
+Нажмите "New token"
+
+Укажите любое имя, выберите Scope: "Read", нажмите "Generate token"
+
+Скопируйте полученный токен
+
+2. 🔑 Авторизоваться в WSL
+В терминале Linux (WSL) выполните:
+
+bash
+Копировать
+Редактировать
+huggingface-cli login
+Вставьте токен. На вопрос Add token as git credential? — введите n.
+
+3. ✅ Подтвердить доступ к gated-моделям
+Перейдите в браузере и нажмите "Access repository" для каждой модели:
+
+🔗 pyannote/speaker-diarization-3.1 👉 https://huggingface.co/pyannote/speaker-diarization-3.1
+
+🔗 pyannote/segmentation 👉 https://huggingface.co/pyannote/segmentation
+
+🔗 pyannote/embedding 👉 https://huggingface.co/pyannote/embedding
+
+🔗 pyannote/voice-activity-detection 👉 https://huggingface.co/pyannote/voice-activity-detection
+
+💡 Без этого загрузка моделей завершится ошибкой Could not download... model is gated.
+
+
+
+
+
 .\install_audio_lora.ps1  # от имени администратора
 
 📦 Результат:
