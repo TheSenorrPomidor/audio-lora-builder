@@ -126,10 +126,10 @@ for idx, file in enumerate(files, 1):
 print(f"✅ Всего обработано файлов: {len(files)}")
 
 
-# === 3. Распознавание речи (Whisper large-v3, cuDNN-guarded GPU, таймер, очистка) ===
-print("\n3. Распознавание речи (Whisper large-v3, cuDNN-guarded GPU, таймер, очистка) v11")
+# === 3. Распознавание речи (WhisperX large-v3, cuDNN-guarded GPU, таймер, очистка) ===
+print("\n3. Распознавание речи (WhisperX large-v3, cuDNN-guarded GPU, таймер, очистка) v11")
 
-from faster_whisper import WhisperModel
+import whisperx
 import time
 
 def has_cudnn():
@@ -138,11 +138,11 @@ def has_cudnn():
 
 def load_model():
     if has_cudnn():
-        print("🧠 Обнаружен cuDNN — используем GPU (int8)...")
-        return WhisperModel("large-v3", device="cuda", compute_type="int8", cpu_threads=4)
+        print("🧠 Обнаружен cuDNN — используем GPU (int8_float16)...")
+        return whisperx.load_model("large-v3", device="cuda", compute_type="int8_float16")
     else:
         print("🧠 cuDNN не найден — используем CPU (int8)...")
-        return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=4)
+        return whisperx.load_model("large-v3", device="cpu", compute_type="int8")
 
 def format_hhmmss(seconds):
     mins, secs = divmod(int(seconds), 60)
@@ -173,14 +173,9 @@ else:
         print(f"📝 ({idx}/{len(wav_files)} {elapsed}) Распознаём: {rel_path}")
         
         try:
-            segments, _ = model.transcribe(
-                str(audio_path),
-                language="ru",
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters={"threshold": 0.5}
-            )
-            segments = list(segments)
+            audio = whisperx.load_audio(str(audio_path))
+            result = model.transcribe(audio, batch_size=16, language="ru")
+            segments = result["segments"]
 
             diarization = dia_pipeline(str(audio_path))
             diar_segments = list(diarization.itertracks(yield_label=True))
