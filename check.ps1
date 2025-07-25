@@ -88,43 +88,46 @@ Write-Host "`n5.7 📦 Расширенная предзагрузка моде�
 $PreloadPath = Join-Path $ScriptDir "temp\preload_diarization_models.py"
 
 @"
-from pyannote.audio import Model, Audio
-from pyannote.audio.pipelines import SpeakerDiarization, VoiceActivityDetection
-import torchaudio
+from pyannote.audio import Model, Pipeline
+from pyannote.audio.pipelines import SpeakerDiarization
+from pyannote.core import Segment
 import torch
+import torchaudio
+import os
 
-# Принудительно загружаем модели
+# Прогрев моделей
 Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
 Model.from_pretrained("pyannote/embedding", use_auth_token=True)
-
-# Прогреваем pipeline
 pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
-pipeline({"waveform": torch.zeros(1, 16000), "sample_rate": 16000})
 
-# Подгружаем VAD на базе segmentation
-vad = VoiceActivityDetection(segmentation="pyannote/segmentation", use_auth_token=True)
-audio = Audio(sample_rate=16000)
+# Валидация на фейковом сигнале
+dummy = torch.zeros(1, 16000)
+pipeline({"waveform": dummy, "sample_rate": 16000})
 
-# Загружаем тестовый mp3
-mp3_path = "/mnt/d/VM/WSL2/audio-lora-builder/audio_src/Сашенька!(0079211058204)_20250622221226.mp3"
-waveform, sample_rate = torchaudio.load(mp3_path)
+# Обработка реального файла
+path = "/mnt/d/VM/WSL2/audio-lora-builder/audio_src/Сашенька!(0079211058204)_20250622221226.mp3"
+waveform, sample_rate = torchaudio.load(path)
+audio = Pipeline.from_pretrained("pyannote/segmentation", use_auth_token=True)
 
-# Получаем интервалы речи
-speech_timeline = vad({'waveform': waveform, 'sample_rate': sample_rate}).get_timeline()
 
-# Вырезаем только участки с речью
-segments = audio.crop({'waveform': waveform, 'sample_rate': sample_rate}, speech_timeline)
 
-# Объединяем вырезанные куски в один аудио-тензор
-speech_only = torch.cat([s for s in segments], dim=1)
+audio_model = Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
 
-# Диаризация только по речи
-diarization = pipeline({"waveform": speech_only, "sample_rate": sample_rate})
 
-# Сохраняем результат
-out_path = "/mnt/d/VM/WSL2/audio-lora-builder/output/test_sasha.rttm"
-with open(out_path, "w") as f:
-    diarization.write_rttm(f)
+
+
+
+
+vad = audio({"waveform": waveform, "sample_rate": sample_rate})
+speech_timeline = vad.support(onset=0.7, offset=0.4, min_duration_on=0.3, min_duration_off=0.2)
+
+segments = audio.crop({"waveform": waveform, "sample_rate": sample_rate}, speech_timeline)
+
+# Финальная диаризация только по VAD-фрагментам
+for i, (segment, wav) in enumerate(segments):
+    diarization = pipeline({"waveform": wav, "sample_rate": sample_rate})
+    with open(f"/mnt/d/VM/WSL2/audio-lora-builder/audio_src/test_segment_{i}.rttm", "w") as f:
+        diarization.write_rttm(f)
 "@ | Set-Content -Encoding UTF8 -Path $PreloadPath
 
 $PreloadPathWsl = Convert-WindowsPathToWsl $PreloadPath
