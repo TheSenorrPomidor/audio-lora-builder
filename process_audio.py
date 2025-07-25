@@ -8,19 +8,40 @@ import json
 import subprocess
 from pathlib import Path
 
+from pyannote.audio import Pipeline
+from speaker_embedding_db import SpeakerEmbeddingDB
+
+
+speaker_db = SpeakerEmbeddingDB()
+# Use the same diarization model version as in check.ps1
+dia_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+
 
 
 # === 0. Функции ====
 # Экспорт результатов в JSON и SRT
 def write_json(transcript, base_path):
+    """Save transcript segments with optional speaker labels to JSON."""
+
     json_path = base_path.with_suffix(".json")
     json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    output = []
+    for s in transcript:
+        if isinstance(s, dict):
+            item = dict(s)
+        else:
+            item = {
+                "start": getattr(s, "start"),
+                "end": getattr(s, "end"),
+                "text": getattr(s, "text"),
+            }
+            if hasattr(s, "speaker"):
+                item["speaker"] = s.speaker
+        output.append(item)
+
     with open(json_path, "w", encoding="utf-8") as jf:
-        json.dump([{
-            "start": s.start,
-            "end": s.end,
-            "text": s.text
-        } for s in transcript], jf, ensure_ascii=False, indent=2)
+        json.dump(output, jf, ensure_ascii=False, indent=2)
 
 def build_summary_json(json_dir: Path):
     assert json_dir.is_dir(), f"❌ {json_dir} не является каталогом"
@@ -158,8 +179,34 @@ else:
                 vad_filter=True,
                 vad_parameters={"threshold": 0.5}
             )
+
             segments = list(segments)
-            write_json(segments, out_txt)
+
+            diarization = dia_pipeline(str(audio_path))
+            diar_segments = list(diarization.itertracks(yield_label=True))
+
+            enriched = []
+            for s in segments:
+                mid = (s.start + s.end) / 2
+                spk_seg = None
+                for seg, _, spk in diar_segments:
+                    if seg.start <= mid <= seg.end:
+                        spk_seg = seg
+                        break
+
+                if spk_seg is None:
+                    spk_id = speaker_db.process_segment(str(audio_path), s.start, s.end)
+                else:
+                    spk_id = speaker_db.process_segment(str(audio_path), spk_seg.start, spk_seg.end)
+
+                enriched.append({
+                    "start": s.start,
+                    "end": s.end,
+                    "speaker": spk_id,
+                    "text": s.text,
+                })
+
+            write_json(enriched, out_txt)
 
         except Exception as e:
             print(f"❌ Ошибка при обработке {rel_path}: {e}")
@@ -198,7 +245,7 @@ else:
 
 
 print(" Распознавание речи пока не реализовано до конца.")
-print("   🚧 Нет сегментации по голосам")
+print("   ✅ Сегментация по голосам выполнена")
 print("   🚧 Нет деления на реплики и диалоги")
 print("   ✅ Экспорт в .json и .srt выполнен")
 
