@@ -222,9 +222,11 @@ wsl --unregister audio-lora + удалить папку
 
 The script keeps track of speaker embeddings in `speaker_db.json`. When a new
 audio file is processed, each diarized segment is compared against the stored
-embeddings using cosine similarity. If the similarity exceeds the configured
-threshold, the segment is assigned to the existing speaker ID; otherwise a new
-ID is created. The average embedding per speaker is updated after each match.
+embeddings using cosine similarity. The diarization step uses
+`pyannote/speaker-diarization-3.1` (the same model as in `check.ps1`). If the
+similarity exceeds the configured threshold, the segment is assigned to the
+existing speaker ID; otherwise a new ID is created. The average embedding per
+speaker is updated after each match.
 
 To reset the stored voices, simply delete `speaker_db.json` before running the
 processing script. A fresh database will be created automatically. You can also

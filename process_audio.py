@@ -14,7 +14,7 @@ from speaker_embedding_db import SpeakerEmbeddingDB
 
 
 speaker_db = SpeakerEmbeddingDB()
-dia_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+dia_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 
 
 

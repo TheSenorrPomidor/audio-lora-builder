@@ -21,3 +21,6 @@ Write-Host "▶️ Запускаем process_audio.py в WSL..."
 wsl -d $Distro -- python3 $TargetLinuxFile
 
 Write-Host "`n✅ Выполнение run_audio_lora.ps1 завершено."
+
+
+
