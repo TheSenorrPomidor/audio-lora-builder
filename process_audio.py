@@ -6,7 +6,10 @@ import os
 import shutil
 import json
 import subprocess
+import datetime
 from pathlib import Path
+
+import srt
 
 from pyannote.audio import Pipeline
 from pyannote.core import Segment
@@ -43,6 +46,23 @@ def write_json(transcript, base_path):
 
     with open(json_path, "w", encoding="utf-8") as jf:
         json.dump(output, jf, ensure_ascii=False, indent=2)
+
+def write_srt(transcript, base_path):
+    """Save transcript segments with optional speaker labels to SRT."""
+    srt_path = base_path.with_suffix(".srt")
+    srt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    subtitles = []
+    for i, s in enumerate(transcript, 1):
+        start = datetime.timedelta(seconds=float(getattr(s, "start")))
+        end = datetime.timedelta(seconds=float(getattr(s, "end")))
+        text = getattr(s, "text")
+        if hasattr(s, "speaker"):
+            text = f"[{getattr(s, 'speaker')}] {text}"
+        subtitles.append(srt.Subtitle(index=i, start=start, end=end, content=text))
+
+    with open(srt_path, "w", encoding="utf-8") as sf:
+        sf.write(srt.compose(subtitles))
 
 def build_summary_json(json_dir: Path):
     assert json_dir.is_dir(), f"❌ {json_dir} не является каталогом"
@@ -207,6 +227,7 @@ else:
                 })
 
             write_json(enriched, out_txt)
+            write_srt(enriched, out_txt)
             
             
             
