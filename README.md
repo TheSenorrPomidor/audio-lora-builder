@@ -108,7 +108,7 @@ wsl -d audio-lora -- ~/audio-lora-builder/run.sh
 
 находит .m4a, .mp3, .aac
 
-выполняет распознавание речи через Whisper
+выполняет распознавание речи через WhisperX
 
 сохраняет сегменты в dialogue.jsonl
 

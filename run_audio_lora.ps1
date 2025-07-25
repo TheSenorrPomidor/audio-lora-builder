@@ -1,7 +1,7 @@
-﻿# === run_audio_lora.ps1 ===
+﻿# === run_audio_lora.ps1 (WhisperX engine) ===
 chcp 65001 > $null
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
-Write-Host "🚀 Копируем и запускаем process_audio.py в WSL..."
+Write-Host "🚀 Копируем и запускаем process_audio.py (движок WhisperX) в WSL..."
 
 # 1. Пути
 $Distro = "audio-lora"
