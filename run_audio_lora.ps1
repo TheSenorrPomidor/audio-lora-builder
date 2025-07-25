@@ -5,22 +5,36 @@ Write-Host "🚀 Копируем и запускаем process_audio.py в WSL.
 
 # 1. Пути
 $Distro = "audio-lora"
-$ScriptPath = Join-Path $PSScriptRoot "process_audio.py"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $TargetLinuxPath = "/root/audio-lora-builder"
-$TargetLinuxFile = "$TargetLinuxPath/process_audio.py"
 
-# 2. Создаём каталог в WSL
+# 2. Список файлов для копирования
+$FilesToCopy = @(
+    "process_audio.py",
+    "speaker_embedding_db.py"
+)
+
+# 3. Создаём каталог в WSL
 wsl -d $Distro -- mkdir -p $TargetLinuxPath
-wsl -d $Distro -- rm -f $TargetLinuxFile
 
-# 3. Читаем содержимое Python-файла и копируем в WSL через echo в bash
-Get-Content $ScriptPath -Raw | wsl -d $Distro -- bash -c "cat > $TargetLinuxFile"
+foreach ($file in $FilesToCopy) {
+    $ScriptPath = Join-Path $ScriptDir $file
+    $TargetLinuxFile = "$TargetLinuxPath/$file"
+    
+    # Удаляем старую версию
+    wsl -d $Distro -- rm -f $TargetLinuxFile
+
+    # Копируем через echo
+    if (Test-Path $ScriptPath) {
+        Write-Host "📄 Копируем: $file"
+        Get-Content $ScriptPath -Raw | wsl -d $Distro -- bash -c "cat > $TargetLinuxFile"
+    } else {
+        Write-Warning "⚠️ Не найден файл: $file"
+    }
+}
 
 # 4. Запускаем
 Write-Host "▶️ Запускаем process_audio.py в WSL..."
-wsl -d $Distro -- python3 $TargetLinuxFile
+wsl -d $Distro -- python3 "$TargetLinuxPath/process_audio.py"
 
 Write-Host "`n✅ Выполнение run_audio_lora.ps1 завершено."
-
-
-
