@@ -12,7 +12,6 @@ from pyannote.audio import Pipeline
 from pyannote.core import Segment
 from speaker_embedding_db import SpeakerEmbeddingDB
 
-
 speaker_db = SpeakerEmbeddingDB()
 dia_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 
@@ -177,7 +176,7 @@ else:
             result = model.transcribe(audio, batch_size=16, language="ru")
             segments = result["segments"]
 
-            diarization = dia_pipeline(str(audio_path))
+            diarization = dia_pipeline(str(audio_path), num_speakers=2)
             diar_segments = list(diarization.itertracks(yield_label=True))
 
             enriched = []
