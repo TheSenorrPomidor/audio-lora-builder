@@ -100,7 +100,20 @@ Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
 Model.from_pretrained("pyannote/embedding", use_auth_token=True)
 
 # Загружаем диаризатор
-pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
+
+# 🔧 Настройка параметров чувствительности
+params = {
+    "onset": 0.8,
+    "offset": 0.5,
+    "min_duration_on": 0.3,
+    "min_duration_off": 0.3,
+}
+# pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
+
+pipeline = SpeakerDiarization.from_pretrained(
+    "pyannote/speaker-diarization-3.1",
+    use_auth_token=True,
+    **params)
 
 # Прогрев на фиктивных данных
 fake_waveform = torch.zeros(1, 16000)
@@ -114,7 +127,7 @@ audio = Audio(sample_rate=16000)
 waveform, sample_rate = audio(audio_path)
 
 # Диаризация
-diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate})
+diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
 
 # Получаем только VAD-подобные участки (спикеры != <NA>)
 vad_timeline = diarization.get_timeline()
@@ -138,38 +151,8 @@ Write-Host "✅ Кэш моделей pyannote полностью загруже
 	Write-Host "❌ СТОП ТЕСТ"; exit 1
 <#
 
-У меня два вопроса:
-1. Файл диаризации наконец создан. Вот файл ```SPEAKER test 1 0.031 0.996 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 1.381 0.574 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 2.157 0.928 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 2.393 1.991 <NA> <NA> SPEAKER_00 <NA> <NA>
-SPEAKER test 1 4.148 2.346 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 6.781 0.894 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 6.865 2.481 <NA> <NA> SPEAKER_00 <NA> <NA>
-SPEAKER test 1 9.802 5.265 <NA> <NA> SPEAKER_03 <NA> <NA>
-SPEAKER test 1 16.147 1.586 <NA> <NA> SPEAKER_01 <NA> <NA>
-SPEAKER test 1 18.087 0.877 <NA> <NA> SPEAKER_01 <NA> <NA>
-SPEAKER test 1 18.965 0.793 <NA> <NA> SPEAKER_02 <NA> <NA>
-SPEAKER test 1 20.517 0.489 <NA> <NA> SPEAKER_01 <NA> <NA>
-SPEAKER test 1 21.580 0.911 <NA> <NA> SPEAKER_01 <NA> <NA>```
-2. Лог запуска здоровый куча всего написана, не понимаю нужно мне это или нет, но лог явно не читаемый для меня, что делать?
-Вот лог ```5.7 📦 Расширенная предзагрузка моделей pyannote...
-Lightning automatically upgraded your loaded checkpoint from v1.5.4 to v2.5.2. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint ../../../../../root/.cache/torch/pyannote/models--pyannote--segmentation/snapshots/660b9e20307a2b0cdb400d0f80aadc04a701fc54/pytorch_model.bin`
-Model was trained with pyannote.audio 0.0.1, yours is 3.3.2. Bad things might happen unless you revert pyannote.audio to 0.x.
-Model was trained with torch 1.10.0+cu102, yours is 2.7.1+cu118. Bad things might happen unless you revert torch to 1.x.
-/usr/local/lib/python3.10/dist-packages/pytorch_lightning/utilities/migration/migration.py:208: You have multiple `ModelCheckpoint` callback states in this checkpoint, but we found state keys that would end up colliding with each other after an upgrade, which means we can't differentiate which of your checkpoint callbacks needs which states. At least one of your `ModelCheckpoint` callbacks will not be able to reload the state.
-Lightning automatically upgraded your loaded checkpoint from v1.2.7 to v2.5.2. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint ../../../../../root/.cache/torch/pyannote/models--pyannote--embedding/snapshots/4db4899737a38b2d618bbd74350915aa10293cb2/pytorch_model.bin`
-Model was trained with pyannote.audio 0.0.1, yours is 3.3.2. Bad things might happen unless you revert pyannote.audio to 0.x.
-Model was trained with torch 1.8.1+cu102, yours is 2.7.1+cu118. Bad things might happen unless you revert torch to 1.x.
-/usr/local/lib/python3.10/dist-packages/pyannote/audio/core/model.py:692: UserWarning: Model has been trained with a task-dependent loss function. Set 'strict' to False to load the model without its loss function and prevent this warning from appearing.
-  warnings.warn(msg)
-Lightning automatically upgraded your loaded checkpoint from v1.2.7 to v2.5.2. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint ../../../../../root/.cache/torch/pyannote/models--pyannote--embedding/snapshots/4db4899737a38b2d618bbd74350915aa10293cb2/pytorch_model.bin`
-Model was trained with pyannote.audio 0.0.1, yours is 3.3.2. Bad things might happen unless you revert pyannote.audio to 0.x.
-Model was trained with torch 1.8.1+cu102, yours is 2.7.1+cu118. Bad things might happen unless you revert torch to 1.x.
-/usr/local/lib/python3.10/dist-packages/pytorch_lightning/core/saving.py:195: Found keys that are not in the model state dict but in the checkpoint: ['loss_func.W']
-/usr/local/lib/python3.10/dist-packages/pyannote/audio/models/blocks/pooling.py:104: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1839.)
-  std = sequences.std(dim=-1, correction=1)
-✅ Кэш моделей pyannote полностью загружен, проверен на файле Саши с VAD-фильтрацией.```
+1. Где мне добавить управление параметрами диаризации? в какой строчке, так же напомни значения по умолчанию с примером кода
+2. ```std(): degrees of freedom...	⚠️ Статистика над пустыми фрагментами``` - над пустыми фрагментами статистика? это нам может помочь отсекать лишних спикеров?
 
 #>
 
