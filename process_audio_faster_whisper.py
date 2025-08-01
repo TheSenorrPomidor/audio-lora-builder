@@ -6,7 +6,11 @@ import os
 import shutil
 import json
 import subprocess
+import datetime
 from pathlib import Path
+
+import srt
+import torch
 
 
 
@@ -21,6 +25,19 @@ def write_json(transcript, base_path):
             "end": s.end,
             "text": s.text
         } for s in transcript], jf, ensure_ascii=False, indent=2)
+
+def write_srt(transcript, base_path):
+    srt_path = base_path.with_suffix(".srt")
+    srt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    subtitles = []
+    for i, s in enumerate(transcript, 1):
+        start = datetime.timedelta(seconds=float(s.start))
+        end = datetime.timedelta(seconds=float(s.end))
+        subtitles.append(srt.Subtitle(index=i, start=start, end=end, content=s.text))
+
+    with open(srt_path, "w", encoding="utf-8") as sf:
+        sf.write(srt.compose(subtitles))
 
 def build_summary_json(json_dir: Path):
     assert json_dir.is_dir(), f"❌ {json_dir} не является каталогом"
@@ -115,12 +132,17 @@ def has_cudnn():
     return any(glob.glob("/usr/lib*/**/libcudnn*.so*", recursive=True))
 
 def load_model():
-    if has_cudnn():
-        print("🧠 Обнаружен cuDNN — используем GPU (int8)...")
-        return WhisperModel("large-v3", device="cuda", compute_type="int8", cpu_threads=4)
+    use_cuda = torch.cuda.is_available() and has_cudnn()
+    if use_cuda:
+        print("🧠 Обнаружены CUDA и cuDNN — пытаемся использовать GPU (int8)...")
+        try:
+            return WhisperModel("large-v3", device="cuda", compute_type="int8", cpu_threads=4)
+        except Exception as e:
+            print(f"⚠️ Ошибка инициализации CUDA модели: {e}")
     else:
-        print("🧠 cuDNN не найден — используем CPU (int8)...")
-        return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=4)
+        print("🧠 CUDA/cuDNN недоступны — используем CPU (int8)...")
+
+    return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=4)
 
 def format_hhmmss(seconds):
     mins, secs = divmod(int(seconds), 60)
@@ -160,6 +182,7 @@ else:
             )
             segments = list(segments)
             write_json(segments, out_txt)
+            write_srt(segments, out_txt)
 
         except Exception as e:
             print(f"❌ Ошибка при обработке {rel_path}: {e}")
