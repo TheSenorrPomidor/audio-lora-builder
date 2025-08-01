@@ -10,6 +10,7 @@ import datetime
 from pathlib import Path
 
 import srt
+import torch
 
 from pyannote.audio import Pipeline
 from pyannote.core import Segment
@@ -157,12 +158,17 @@ def has_cudnn():
     return any(glob.glob("/usr/lib*/**/libcudnn*.so*", recursive=True))
 
 def load_model():
-    if has_cudnn():
-        print("🧠 Обнаружен cuDNN — используем GPU (int8)...")
-        return WhisperModel("large-v3", device="cuda", compute_type="int8", cpu_threads=4)
+    use_cuda = torch.cuda.is_available() and has_cudnn()
+    if use_cuda:
+        print("🧠 Обнаружены CUDA и cuDNN — пытаемся использовать GPU (int8)...")
+        try:
+            return WhisperModel("large-v3", device="cuda", compute_type="int8", cpu_threads=4)
+        except Exception as e:
+            print(f"⚠️ Ошибка инициализации CUDA модели: {e}")
     else:
-        print("🧠 cuDNN не найден — используем CPU (int8)...")
-        return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=4)
+        print("🧠 CUDA/cuDNN недоступны — используем CPU (int8)...")
+
+    return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=4)
 
 def format_hhmmss(seconds):
     mins, secs = divmod(int(seconds), 60)
