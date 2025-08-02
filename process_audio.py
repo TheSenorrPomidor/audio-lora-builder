@@ -164,12 +164,11 @@ for idx, audio_path in enumerate(wav_files, 1):
         segment_audio = (
             segment_audio if torch.is_tensor(segment_audio) else torch.from_numpy(segment_audio)
         )
-        seg_len = segment_audio.shape[-1]
-        if seg_len < min_len:
-            segment_audio = F.pad(segment_audio, (0, min_len - seg_len))
-        if segment_audio.shape[-1] < min_len:
-            continue
         segment_tensor = segment_audio.unsqueeze(0).float()
+        if segment_tensor.shape[-1] < min_len:
+            segment_tensor = F.pad(segment_tensor, (0, min_len - segment_tensor.shape[-1]))
+        if segment_tensor.shape[-1] < min_len:
+            continue
         with torch.no_grad():
             emb_tensor = embedding_model(segment_tensor)
         emb_np = emb_tensor.squeeze(0).cpu().numpy()
