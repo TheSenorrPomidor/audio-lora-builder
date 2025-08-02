@@ -14,7 +14,6 @@ from faster_whisper import WhisperModel
 from pyannote.audio import Model, Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
-import faiss
 import numpy as np
 import torch
 
@@ -41,6 +40,26 @@ def format_hhmmss(seconds):
     mins, secs = divmod(int(seconds), 60)
     hrs, mins = divmod(mins, 60)
     return f"{hrs:02}:{mins:02}:{secs:02}"
+
+
+def l2_normalize(matrix: np.ndarray) -> np.ndarray:
+    """Normalize rows of the matrix to unit L2 norm."""
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    return matrix / norms
+
+
+def kmeans(matrix: np.ndarray, k: int = 2, n_iter: int = 20, seed: int = 0) -> np.ndarray:
+    """Simple k-means clustering using NumPy."""
+    rng = np.random.default_rng(seed)
+    centroids = matrix[rng.choice(len(matrix), size=k, replace=False)]
+    for _ in range(n_iter):
+        distances = ((matrix[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        labels = distances.argmin(axis=1)
+        for i in range(k):
+            if np.any(labels == i):
+                centroids[i] = matrix[labels == i].mean(axis=0)
+    return labels
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -129,9 +148,8 @@ for idx, audio_path in enumerate(wav_files, 1):
     segment_map[str(rel_path)] = seg_data
 
 # Кластеризация всех эмбеддингов
-emb_matrix = np.vstack(all_embeddings).astype('float32')
-faiss.normalize_L2(emb_matrix)
-_, labels = faiss.kmeans(emb_matrix, k=2, niter=20, verbose=False)
+emb_matrix = l2_normalize(np.vstack(all_embeddings).astype("float32"))
+labels = kmeans(emb_matrix, k=2, n_iter=20)
 
 # Определим какой кластер — ты
 label_counts = Counter(labels)
