@@ -139,10 +139,13 @@ sinc_ks = (
     if isinstance(sinc_layer.kernel_size, (tuple, list))
     else sinc_layer.kernel_size
 )
+tdnn_layer = next(
+    m for m in embedding_model.tdnns if hasattr(m, "kernel_size")
+)
 tdnn_ks = (
-    embedding_model.tdnn1.kernel_size[0]
-    if isinstance(embedding_model.tdnn1.kernel_size, (tuple, list))
-    else embedding_model.tdnn1.kernel_size
+    tdnn_layer.kernel_size[0]
+    if isinstance(tdnn_layer.kernel_size, (tuple, list))
+    else tdnn_layer.kernel_size
 )
 min_len = sinc_ks + tdnn_ks - 1
 
