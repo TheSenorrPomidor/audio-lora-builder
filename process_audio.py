@@ -131,6 +131,7 @@ model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else
 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 audio_reader = Audio(sample_rate=16000)
 embedding_model = Model.from_pretrained("pyannote/embedding")
+min_len = embedding_model.sincnet[0].kernel_size
 
 all_embeddings = []
 segment_map = {}
@@ -157,9 +158,10 @@ for idx, audio_path in enumerate(wav_files, 1):
             segment_audio if torch.is_tensor(segment_audio)
             else torch.from_numpy(segment_audio)
         ).float().unsqueeze(0)
-        segment_length = segment_tensor.shape[-1]
-        if segment_length < 5:
-            segment_tensor = F.pad(segment_tensor, (0, 5 - segment_length))
+        if segment_tensor.shape[-1] < min_len:
+            segment_tensor = F.pad(segment_tensor, (0, min_len - segment_tensor.shape[-1]))
+        if segment_tensor.shape[-1] < min_len:
+            continue
         with torch.no_grad():
             emb_tensor = embedding_model(segment_tensor)
         emb_np = emb_tensor.squeeze(0).cpu().numpy()
