@@ -63,6 +63,16 @@ def kmeans(matrix: np.ndarray, k: int = 2, n_iter: int = 20, seed: int = 0) -> n
     return labels
 
 
+def sincnet_receptive_field(model):
+    rf = 1
+    for layer in model.sincnet.modules():
+        if isinstance(layer, torch.nn.Conv1d):
+            rf = rf + (layer.kernel_size[0] - 1)
+        elif isinstance(layer, torch.nn.MaxPool1d):
+            rf = (rf - 1) * layer.stride + 1
+    return rf
+
+
 def extract_phone_number(name: str) -> str | None:
     """Extract the first 11+ digit sequence from a filename."""
     import re
@@ -131,14 +141,6 @@ model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else
 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 audio_reader = Audio(sample_rate=16000)
 embedding_model = Model.from_pretrained("pyannote/embedding")
-sinc_layer = next(
-    m for m in embedding_model.sincnet.modules() if hasattr(m, "kernel_size")
-)
-sinc_ks = (
-    sinc_layer.kernel_size[0]
-    if isinstance(sinc_layer.kernel_size, (tuple, list))
-    else sinc_layer.kernel_size
-)
 tdnn_layer = next(
     m for m in embedding_model.tdnns if hasattr(m, "kernel_size")
 )
@@ -147,7 +149,7 @@ tdnn_ks = (
     if isinstance(tdnn_layer.kernel_size, (tuple, list))
     else tdnn_layer.kernel_size
 )
-min_len = sinc_ks + tdnn_ks - 1
+min_len = sincnet_receptive_field(embedding_model) + tdnn_ks - 1
 
 all_embeddings = []
 segment_map = {}
@@ -174,8 +176,7 @@ for idx, audio_path in enumerate(wav_files, 1):
             segment_audio if torch.is_tensor(segment_audio) else torch.from_numpy(segment_audio)
         )
         segment_tensor = segment_audio.unsqueeze(0).float()
-        if segment_tensor.shape[-1] < min_len:
-            segment_tensor = F.pad(segment_tensor, (0, min_len - segment_tensor.shape[-1]))
+        segment_tensor = F.pad(segment_tensor, (0, max(0, min_len - segment_tensor.shape[-1])))
         if segment_tensor.shape[-1] < min_len:
             continue
         with torch.no_grad():
