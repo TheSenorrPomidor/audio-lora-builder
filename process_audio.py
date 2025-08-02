@@ -16,6 +16,7 @@ from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # === 0. Функции ===
 def write_json_v2(segments, base_path, rel_path, you_id, caller_id):
@@ -156,6 +157,9 @@ for idx, audio_path in enumerate(wav_files, 1):
             segment_audio if torch.is_tensor(segment_audio)
             else torch.from_numpy(segment_audio)
         ).float().unsqueeze(0)
+        segment_length = segment_tensor.shape[-1]
+        if segment_length < 5:
+            segment_tensor = F.pad(segment_tensor, (0, 5 - segment_length))
         with torch.no_grad():
             emb_tensor = embedding_model(segment_tensor)
         emb_np = emb_tensor.squeeze(0).cpu().numpy()
