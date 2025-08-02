@@ -7,9 +7,28 @@ $BaseRootfs = Join-Path $RootfsDir "Ubuntu_2204.1.7.0_x64_rootfs.tar.gz"
 $BundleZipFile = Join-Path $TempDir "Ubuntu2204AppxBundle.zip"
 $BundleExtractPath = Join-Path $TempDir "Ubuntu2204AppxBundle"
 # Whisper-механизм: faster-whisper или whisperx
-$WhisperImpl = "whisperx"
+$WhisperImpl = "faster-whisper"
 #wsl --export audio-lora "D:\VM\WSL2\audio-lora-builder\rootfs\audio_lora_rootfs.tar.gz"
 #sudo rm -rf /root/.cache/torch/pyannote
+
+
+
+#
+
+$KeyDir = Join-Path $ScriptDir "ssh_keys"
+
+
+
+#
+
+
+
+
+
+
+
+
+
 
 
 
@@ -23,57 +42,42 @@ function Convert-WindowsPathToWsl {
     $WslPath = $WindowsPath -replace '\\', '/' -replace '^([A-Za-z]):', '/mnt/$1'
     return $WslPath.ToLower()
 }
-function Get-WhlInventory($WhlDir, $DistroName) {
-    $Inventory = @{}
-	if (-not (Test-Path $WhlDir)) { New-Item -ItemType Directory -Path $WhlDir | Out-Null }
-    $WhlFiles = Get-ChildItem -Path $WhlDir -Filter *.whl
 
-	#Счетчик для процента прогресса
-	$step = 1
-	$total = $WhlFiles.Count
-	
-    foreach ($whl in $WhlFiles) {
-		
-			#Write-Host $name=$version
-			#Процент прогресса
-			$percent = [math]::Round(($step / $total) * 100)
-			Write-Host -NoNewline "`r📦 Чтение .whl файлов: $percent%"
-			$step++                                                     
+function Get-HuggingFaceToken {
+    $TokenPath = Join-Path $KeyDir "huggingface_hub_token.txt"
 
+    if (-not (Test-Path $TokenPath)) {
+        Write-Host "🔐 Токен не найден. Введите токен Hugging Face:"
+        $Token = Read-Host "HuggingFace Token"
+        $Token = $Token.Trim()
 
+        $WhoamiCmd = "curl -s -H 'Authorization: Bearer {0}' https://huggingface.co/api/whoami" -f $Token
 
-        # Преобразуем путь в WSL-совместимый 
-		$whlPathWsl = Convert-WindowsPathToWsl $whl.FullName
+        $WhoamiJson = wsl -d $DistroName -- bash -c "$WhoamiCmd"
 
-        # Извлекаем Name и Version из METADATA файла
-		$cmd = "unzip -p '$whlPathWsl' '*.dist-info/METADATA' | grep -E '^(Name|Version):'"
-        $meta = wsl -d $DistroName -- bash -c $cmd
+        try {
+            $Parsed = $WhoamiJson | ConvertFrom-Json
+            if (-not $Parsed.name) {
+                throw "Токен не прошёл верификацию"
+            }
 
-        # Разбор результата
-        $lines = $meta -split "`n"
-       # $name = ($lines | Where-Object { $_ -like 'Name:*' }) -replace 'Name:\s*', ''
-       # $version = ($lines | Where-Object { $_ -like 'Version:*' }) -replace 'Version:\s*', ''
+            Write-Host "✅ Авторизация успешна. Учётная запись: $($Parsed.username) <$($Parsed.email)>"
 
-		$name = ($lines | Where-Object { $_ -like 'Name:*' } | Select-Object -First 1) -replace 'Name:\s*', ''
-		$name = $name.ToLower()
-		$version = ($lines | Where-Object { $_ -like 'Version:*' } | Select-Object -First 1) -replace 'Version:\s*', ''
-
-		
-        if ($name -and $version) {
-            $Inventory["$name==$version"] = $whl.FullName
+            New-Item -Path $KeyDir -ItemType Directory -Force | Out-Null
+            $Token | Set-Content -Encoding UTF8 -Path $TokenPath
         }
+		catch {
+			Write-Host "❌ Ошибка проверки токена:"
+			Write-Host $_.Exception.Message
+			Write-Host "⛔ Завершение."
+			exit 1
+		}
+
     }
 
-	Write-Host "`r📦 Чтение .whl файлов завершено.           "
-
-	return $Inventory.GetEnumerator() | ForEach-Object {
-	@{
-		Name    = ($_).Key -split '==' | Select-Object -First 1
-		Version = ($_).Key -split '==' | Select-Object -Skip 1
-		Path    = ($_).Value
-	}
-	}
+    return (Get-Content $TokenPath -Raw).Trim()
 }
+
 
 
 
@@ -168,7 +172,7 @@ else {
 	}
 }
 
-Write-Host "✅ Кэш моделей pyannote загружен"
+$Token = Get-HuggingFaceToken
 
 
 
@@ -176,7 +180,17 @@ Write-Host "✅ Кэш моделей pyannote загружен"
 	Write-Host "❌ СТОП ТЕСТ"; exit 1
 <#
 
+Поиск токена в ssh_keys;
 
+Чтение, либо интерактивный ввод;
+
+Верификацию токена через WSL + curl; - ТОЛЬКО ЕСЛИ БЫЛ ИНТЕРРАКТИВНЫЙ ВВОД
+
+Вывод имени и почты учётки; - ТОЛЬКО ЕСЛИ БЫЛ ИНТЕРРАКТИВНЫЙ ВВОД
+
+Сохранение токена при успешной проверке. - ТОЛЬКО ЕСЛИ БЫЛ ИНТЕРРАКТИВНЫЙ ВВОД
+
+Возврат токена из файла в папке ssh_keys
 
 #>
 
