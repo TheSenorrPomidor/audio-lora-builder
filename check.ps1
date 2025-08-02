@@ -51,27 +51,24 @@ function Get-HuggingFaceToken {
         $Token = Read-Host "HuggingFace Token"
         $Token = $Token.Trim()
 
-        $WhoamiCmd = "curl -s -H 'Authorization: Bearer {0}' https://huggingface.co/api/whoami" -f $Token
-
-        $WhoamiJson = wsl -d $DistroName -- bash -c "$WhoamiCmd"
-
         try {
-            $Parsed = $WhoamiJson | ConvertFrom-Json
+            $Headers = @{ Authorization = "Bearer $Token" }
+            $Parsed = Invoke-RestMethod -Uri "https://huggingface.co/api/whoami-v2" -Headers $Headers -Method Get
             if (-not $Parsed.name) {
                 throw "Токен не прошёл верификацию"
             }
 
-            Write-Host "✅ Авторизация успешна. Учётная запись: $($Parsed.username) <$($Parsed.email)>"
+            Write-Host "✅ Авторизация успешна. Учётная запись: $($Parsed.name) <$($Parsed.email)>"
 
             New-Item -Path $KeyDir -ItemType Directory -Force | Out-Null
             $Token | Set-Content -Encoding UTF8 -Path $TokenPath
         }
-		catch {
-			Write-Host "❌ Ошибка проверки токена:"
-			Write-Host $_.Exception.Message
-			Write-Host "⛔ Завершение."
-			exit 1
-		}
+        catch {
+            Write-Host "❌ Ошибка проверки токена:"
+            Write-Host $_.Exception.Message
+            Write-Host "⛔ Завершение."
+            exit 1
+        }
 
     }
 
