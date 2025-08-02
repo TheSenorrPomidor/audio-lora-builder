@@ -152,7 +152,10 @@ for idx, audio_path in enumerate(wav_files, 1):
     for seg in diarization.itertracks(yield_label=True):
         turn, _, speaker = seg
         segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-        segment_tensor = torch.from_numpy(segment_audio).float().unsqueeze(0)
+        segment_tensor = (
+            segment_audio if torch.is_tensor(segment_audio)
+            else torch.from_numpy(segment_audio)
+        ).float().unsqueeze(0)
         with torch.no_grad():
             emb_tensor = embedding_model(segment_tensor)
         emb_np = emb_tensor.squeeze(0).cpu().numpy()
