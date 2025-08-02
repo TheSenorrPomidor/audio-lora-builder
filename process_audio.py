@@ -14,7 +14,6 @@ from faster_whisper import WhisperModel
 from pyannote.audio import Model, Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
-import faiss
 import numpy as np
 import torch
 
@@ -42,17 +41,46 @@ def format_hhmmss(seconds):
     hrs, mins = divmod(mins, 60)
     return f"{hrs:02}:{mins:02}:{secs:02}"
 
+
+def l2_normalize(matrix: np.ndarray) -> np.ndarray:
+    """Normalize rows of the matrix to unit L2 norm."""
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    return matrix / norms
+
+
+def kmeans(matrix: np.ndarray, k: int = 2, n_iter: int = 20, seed: int = 0) -> np.ndarray:
+    """Simple k-means clustering using NumPy."""
+    rng = np.random.default_rng(seed)
+    centroids = matrix[rng.choice(len(matrix), size=k, replace=False)]
+    for _ in range(n_iter):
+        distances = ((matrix[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        labels = distances.argmin(axis=1)
+        for i in range(k):
+            if np.any(labels == i):
+                centroids[i] = matrix[labels == i].mean(axis=0)
+    return labels
+
+
+def extract_phone_number(name: str) -> str | None:
+    """Extract the first 11+ digit sequence from a filename."""
+    import re
+    match = re.search(r"(\d{11,})", name)
+    return match.group(1) if match else None
+
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
 ENV_FILE = "/root/audio-lora-builder/config/env.vars"
 WIN_AUDIO_SRC = None
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 if os.path.exists(ENV_FILE):
     with open(ENV_FILE, "r", encoding="utf-8") as f:
         for line in f:
             if line.startswith("WIN_AUDIO_SRC="):
                 WIN_AUDIO_SRC = line.strip().split("=", 1)[1]
-                break
+            elif line.startswith("HF_TOKEN=") and not HF_TOKEN:
+                HF_TOKEN = line.strip().split("=", 1)[1]
 if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
     print("⚠️ Не удалось найти корректный путь до папки с аудиофайлами.")
     user_input = input("Введите путь до папки с аудиофайлами [/mnt/c/]: ").strip()
@@ -62,6 +90,14 @@ if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
     Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
     with open(ENV_FILE, "w", encoding="utf-8") as f:
         f.write(f"WIN_AUDIO_SRC={WIN_AUDIO_SRC}\n")
+        if HF_TOKEN:
+            f.write(f"HF_TOKEN={HF_TOKEN}\n")
+if not HF_TOKEN:
+    print("⚠️ Не найден токен Hugging Face.")
+    HF_TOKEN = input("Введите токен Hugging Face: ").strip()
+    Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
+    with open(ENV_FILE, "a", encoding="utf-8") as f:
+        f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
 # === 2. Конвертация файлов ===
 print("2. 🎧 Конвертация аудиофайлов...")
@@ -91,9 +127,9 @@ if not wav_files:
     exit(0)
 
 model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="int8")
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN)
 audio_reader = Audio(sample_rate=16000)
-embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token=HF_TOKEN)
 
 all_embeddings = []
 segment_map = {}
@@ -116,22 +152,24 @@ for idx, audio_path in enumerate(wav_files, 1):
     for seg in diarization.itertracks(yield_label=True):
         turn, _, speaker = seg
         segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-        emb = embedding_model({'waveform': segment_audio, 'sample_rate': sample_rate})
-        all_embeddings.append(emb.data.numpy())
-        emb_list.append(emb.data.numpy())
+        segment_tensor = torch.tensor(segment_audio, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            emb_tensor = embedding_model(segment_tensor)
+        emb_np = emb_tensor.squeeze(0).cpu().numpy()
+        all_embeddings.append(emb_np)
+        emb_list.append(emb_np)
 
         text = ""
         for s in segments:
             if s.start >= turn.start and s.end <= turn.end:
                 text += s.text.strip() + " "
-        seg_data.append({"start": turn.start, "end": turn.end, "text": text.strip(), "embedding": emb.data.numpy()})
+        seg_data.append({"start": turn.start, "end": turn.end, "text": text.strip(), "embedding": emb_np})
 
     segment_map[str(rel_path)] = seg_data
 
 # Кластеризация всех эмбеддингов
-emb_matrix = np.vstack(all_embeddings).astype('float32')
-faiss.normalize_L2(emb_matrix)
-_, labels = faiss.kmeans(emb_matrix, k=2, niter=20, verbose=False)
+emb_matrix = l2_normalize(np.vstack(all_embeddings).astype("float32"))
+labels = kmeans(emb_matrix, k=2, n_iter=20)
 
 # Определим какой кластер — ты
 label_counts = Counter(labels)
@@ -158,9 +196,4 @@ print(f"✅ Обработка завершена. Всего файлов: {len
 print(f"⏱️ Время выполнения: {total_time}")
 
 # === Завершение ===
-def extract_phone_number(name):
-    import re
-    match = re.search(r"(\d{11,})", name)
-    return match.group(1) if match else None
-
 print("\n✅ Выполнение process_audio.py завершено.")
