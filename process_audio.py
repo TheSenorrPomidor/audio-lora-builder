@@ -156,7 +156,6 @@ else:
                 language="ru",
                 beam_size=5,
                 vad_filter=True,
-                vad_parameters={"threshold": 0.5}
             )
             segments = list(segments)
             write_json(segments, out_txt)

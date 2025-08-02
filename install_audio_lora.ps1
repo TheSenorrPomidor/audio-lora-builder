@@ -497,11 +497,16 @@ $PyWheels = @(
   @{ Name = "librosa==0.10.0";       Source = "torch"; Impl = "whisperx" },
   @{ Name = "pyannote-audio==3.3.2"; Source = "torch"; Impl = "whisperx" },
   @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "whisperx" },
+  
   @{ Name = "faster-whisper==1.1.0"; Source = "torch"; Impl = "faster-whisper" },
   @{ Name = "pyannote-audio==3.3.2"; Source = "torch"; Impl = "faster-whisper" },
   @{ Name = "transformers==4.28.1";  Source = "torch"; Impl = "faster-whisper" },
   @{ Name = "librosa==0.10.0";       Source = "torch"; Impl = "faster-whisper" },
-  @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "faster-whisper" }
+  @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "faster-whisper" },
+  
+  @{ Name = "faiss-gpu==1.7.2";      Source = "torch"; Impl = "faster-whisper" },
+  @{ Name = "scikit-learn==1.7.1";   Source = "torch"; Impl = "faster-whisper" }
+
 
 )
 #Проверить какие пакеты .whl установлены в WSL
