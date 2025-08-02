@@ -43,6 +43,7 @@ function Convert-WindowsPathToWsl {
     return $WslPath.ToLower()
 }
 
+# === Функция получения/чтения HuggingFaceToken из/в файл huggingface_hub_token.txt ===
 function Get-HuggingFaceToken {
     $TokenPath = Join-Path $KeyDir "huggingface_hub_token.txt"
 
@@ -93,6 +94,7 @@ $ModelCacheLocalWsl = "/root/.cache/torch/pyannote"
 $TempPreloadPyFile = Join-Path $TempDir "preload_diarization_models.py"
 $TempPreloadPyFileWsl = Convert-WindowsPathToWsl $TempPreloadPyFile	
 $PyannoteCacheSearchPattern = "*pyannote*"
+$HFToken = Get-HuggingFaceToken
 $PythonLoadScript = @"
 from pyannote.audio import Model
 from pyannote.audio.pipelines import SpeakerDiarization
@@ -100,7 +102,7 @@ from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 import torch
 import os
-
+os.environ['HUGGINGFACE_HUB_TOKEN'] = r'$HFToken'
 
 import warnings
 warnings.filterwarnings("ignore")  # отключает все предупреждения
