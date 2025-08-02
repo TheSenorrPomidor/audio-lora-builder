@@ -131,8 +131,19 @@ model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else
 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 audio_reader = Audio(sample_rate=16000)
 embedding_model = Model.from_pretrained("pyannote/embedding")
-sinc_ks = embedding_model.sincnet.sincconv.kernel_size[0]
-tdnn_ks = embedding_model.tdnn1.kernel_size[0]
+sinc_layer = next(
+    m for m in embedding_model.sincnet.modules() if hasattr(m, "kernel_size")
+)
+sinc_ks = (
+    sinc_layer.kernel_size[0]
+    if isinstance(sinc_layer.kernel_size, (tuple, list))
+    else sinc_layer.kernel_size
+)
+tdnn_ks = (
+    embedding_model.tdnn1.kernel_size[0]
+    if isinstance(embedding_model.tdnn1.kernel_size, (tuple, list))
+    else embedding_model.tdnn1.kernel_size
+)
 min_len = sinc_ks + tdnn_ks - 1
 
 all_embeddings = []
