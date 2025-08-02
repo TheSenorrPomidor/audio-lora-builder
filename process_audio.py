@@ -127,9 +127,9 @@ if not wav_files:
     exit(0)
 
 model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="int8")
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN)
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 audio_reader = Audio(sample_rate=16000)
-embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token=HF_TOKEN)
+embedding_model = Model.from_pretrained("pyannote/embedding")
 
 all_embeddings = []
 segment_map = {}

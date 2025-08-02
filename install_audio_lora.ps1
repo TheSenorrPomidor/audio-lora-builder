@@ -506,7 +506,7 @@ $PyWheels = @(
   
   @{ Name = "faiss-gpu==1.7.2";      Source = "torch"; Impl = "faster-whisper" },
   @{ Name = "scikit-learn==1.7.1";   Source = "torch"; Impl = "faster-whisper" }
-
+#faiss-gpu==1.7.2 возможно стоит убрать
 
 )
 #Проверить какие пакеты .whl установлены в WSL
