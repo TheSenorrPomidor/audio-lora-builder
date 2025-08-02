@@ -1,4 +1,4 @@
-﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.3"
+﻿Write-Host "`nВерсия скрипта install_audio_lora.ps1 4.4"
 # === install_audio_lora.ps1 ===
 
 # === Настройка путей ===
@@ -11,7 +11,7 @@ $BaseRootfs = Join-Path $RootfsDir "Ubuntu_2204.1.7.0_x64_rootfs.tar.gz"
 $BundleZipFile = Join-Path $TempDir "Ubuntu2204AppxBundle.zip"
 $BundleExtractPath = Join-Path $TempDir "Ubuntu2204AppxBundle"
 # Whisper-механизм: faster-whisper или whisperx
-$WhisperImpl = "whisperx"
+$WhisperImpl = "faster-whisper"
 
 
 
@@ -26,6 +26,7 @@ function Convert-WindowsPathToWsl {
     $WslPath = $WindowsPath -replace '\\', '/' -replace '^([A-Za-z]):', '/mnt/$1'
     return $WslPath.ToLower()
 }
+# === Функция поиска пакетов WHL в локальной папке ===
 function Get-WhlInventory($WhlDir, $DistroName) {
     $Inventory = @{}
 	if (-not (Test-Path $WhlDir)) { New-Item -ItemType Directory -Path $WhlDir | Out-Null }
@@ -58,7 +59,7 @@ function Get-WhlInventory($WhlDir, $DistroName) {
        # $version = ($lines | Where-Object { $_ -like 'Version:*' }) -replace 'Version:\s*', ''
 
 		$name = ($lines | Where-Object { $_ -like 'Name:*' } | Select-Object -First 1) -replace 'Name:\s*', ''
-		$name = $name.ToLower()
+		$name = $name.ToLower() -replace '[._]+', '-'
 		$version = ($lines | Where-Object { $_ -like 'Version:*' } | Select-Object -First 1) -replace 'Version:\s*', ''
 
 		
@@ -493,14 +494,18 @@ else {
 Write-Host "`n5.4 📦 Установка Python-библиотек (torch, $WhisperImpl) из temp\pip (Windows)"
 $PipCacheWin = Join-Path $TempDir "pip"
 $PipCacheWsl = Convert-WindowsPathToWsl $PipCacheWin
-
+#Source = "torch" или "pypi"
 $PyWheels = @(
   @{ Name = "whisperx==3.3.1";       Source = "torch"; Impl = "whisperx" },
   @{ Name = "transformers==4.28.1";  Source = "torch"; Impl = "whisperx" },
   @{ Name = "librosa==0.10.0";       Source = "torch"; Impl = "whisperx" },
   @{ Name = "pyannote-audio==3.3.2"; Source = "torch"; Impl = "whisperx" },
   @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "whisperx" },
-  @{ Name = "faster-whisper";        Source = "pypi";  Impl = "faster-whisper" }
+  @{ Name = "faster-whisper==1.1.0"; Source = "torch"; Impl = "faster-whisper" },
+  @{ Name = "pyannote-audio==3.3.2"; Source = "torch"; Impl = "faster-whisper" },
+  @{ Name = "transformers==4.28.1";  Source = "torch"; Impl = "faster-whisper" },
+  @{ Name = "librosa==0.10.0";       Source = "torch"; Impl = "faster-whisper" },
+  @{ Name = "hydra-core==1.3.2";     Source = "torch"; Impl = "faster-whisper" }
 
 )
 #Проверить какие пакеты .whl установлены в WSL
@@ -579,11 +584,11 @@ if ($PyWheelsMissing.Count -gt 0) {
 	if ((Test-Path $txtPathWin) -and ($toDownload.Count -eq 0)) {
 		Write-Host "`n📄 Все ключевые пакеты WHL по источнику $group скачены и файл requirements_${group}.txt уже есть, Генерация нового requirements_${group}.txt не требуется..."
 		} else {
+				Write-Host "`n📄 Генерируем по источнику $group файл requirements_${group}.txt..."
 				$compileCmd = "uv pip compile '$inPathWsl' --output-file '$txtPathWsl'"
 				if ($group -eq "torch") {
 					$compileCmd += " --extra-index-url https://download.pytorch.org/whl/cu118"
 				}		
-				Write-Host "`n📄 Генерация requirements_${group}.txt..."
 				wsl -d $DistroName -- bash -c "$compileCmd > /dev/null 2>&1"
 				Write-Host "🌐 Загрузка зависимостей $group..."
 				$downloadCmd = "pip download -r '$txtPathWsl' -d '$PipCacheWsl'"
@@ -730,8 +735,15 @@ else {
 
 
 
-# === 5.6 ⚙️ Генерация конфигурации путей ===
-Write-Host "`n5.6 ⚙️ Генерируем конфигурацию путей..."
+
+
+
+
+
+
+
+# === 5.7 ⚙️ Генерация конфигурации путей ===
+Write-Host "`n5.7 ⚙️ Генерируем конфигурацию путей..."
 
 $AudioSrcDir = Join-Path $ScriptDir "audio_src"
 

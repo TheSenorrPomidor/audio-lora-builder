@@ -83,19 +83,23 @@ wsl -d $DistroName -- bash -c "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"
 ###############################################################################
 ###############################################################################
 ###############################################################################
+#НАДО КОПИРОВАТЬ ПАПКУ PYANNOTE В \\wsl.localhost\audio-lora\root\.cache\torch
 
-
-Write-Host "`n5.7 📦 Расширенная предзагрузка моделей pyannote..."
-
-$PreloadPath = Join-Path $ScriptDir "temp\preload_diarization_models.py"
-
-@"
+Write-Host "`n5.6 📦 Расширенная предзагрузка моделей pyannote..."
+$ModelCacheWin = Join-Path $TempDir "huggingface\torch\pyannote"
+$ModelCacheWinWsl = Convert-WindowsPathToWsl $ModelCacheWin
+$ModelCacheLocalWsl = "/root/.cache/torch/pyannote"
+$TempPreloadPyFile = Join-Path $TempDir "preload_diarization_models.py"
+$TempPreloadPyFileWsl = Convert-WindowsPathToWsl $TempPreloadPyFile	
+$PyannoteCacheSearchPattern = "*pyannote*"
+$PythonLoadScript = @"
 from pyannote.audio import Model
 from pyannote.audio.pipelines import SpeakerDiarization
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 import torch
 import os
+
 
 import warnings
 warnings.filterwarnings("ignore")  # отключает все предупреждения
@@ -117,39 +121,54 @@ pipeline.min_duration_on = 0.136       # 0.136 по умолчанию. Мини
 pipeline.min_duration_off = 0.067      # 0.067 по умолчанию Минимальная продолжительность паузы, чтобы считалась настоящей тишиной между спикерами. Если тишина короче 67 мс, она игнорируется и две реплики сливаются в одну.
 
 
-
-
-
 # Прогрев на фиктивных данных
-fake_waveform = torch.zeros(1, 16000)
-pipeline({"waveform": fake_waveform, "sample_rate": 16000})
+fake_waveform = torch.zeros(1, 16000 * 5)  # 5 секунд тишины
+pipeline({"waveform": fake_waveform, "sample_rate": 16000}, num_speakers=2)
+"@ 
 
-# Загружаем реальный mp3-файл
-audio_path = "/mnt/d/VM/WSL2/audio-lora-builder/audio_src/Сашенька!(0079211058204)_20250622221226.mp3"
-output_path = "/mnt/d/VM/WSL2/audio-lora-builder/audio_src/Сашенька!(0079211058204)_20250622221226.vad.rttm"
 
-audio = Audio(sample_rate=16000)
-waveform, sample_rate = audio(audio_path)
+#Проверка установленного кэша модели в WSL)
+Write-Host "📦 Проверка установленного кэша модели Pyannote в WSL..."
+$CheckModelCmd = "bash -c 'ls -1 " + $ModelCacheLocalWsl + "/" + $PyannoteCacheSearchPattern + " 1>/dev/null 2>&1'"
 
-# Диаризация
-diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
-#diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate})
 
-# Получаем только VAD-подобные участки (спикеры != <NA>)
-vad_timeline = diarization.get_timeline()
+wsl -d $DistroName -- bash -c "$CheckModelCmd"
+$ModelCached = $LASTEXITCODE
 
-# Сохраняем RTTM
-with open(output_path, "w") as f:
-    for turn, track, speaker in diarization.itertracks(yield_label=True):
-        start = turn.start
-        duration = turn.end - turn.start
-        f.write(f"SPEAKER test 1 {start:.3f} {duration:.3f} <NA> <NA> {speaker} <NA> <NA>\n")
-"@ | Set-Content -Encoding UTF8 -Path $PreloadPath
+if ($ModelCached -eq 0) {
+	Write-Host "✅ Кэш Pyannote уже установлен на WSL. Пропускаем загрузку."
+}
+else {
+	#Проверяем кэш в temp на Windows
+	Write-Host "📦 Кэш в WSL не найден, ищем кэш в temp: $ModelCacheWin"
+	$CheckModelCmd = "bash -c 'ls -1 " + $ModelCacheWinWsl + "/" + $PyannoteCacheSearchPattern + " 1>/dev/null 2>&1'"
 
-$PreloadPathWsl = Convert-WindowsPathToWsl $PreloadPath
-wsl -d $DistroName -- bash -c "python3 '$PreloadPathWsl'"
 
-Write-Host "✅ Кэш моделей pyannote полностью загружен, проверен на файле Саши с VAD-фильтрацией."
+	wsl -d $DistroName -- bash -c "$CheckModelCmd"
+	$ModelDownloaded = $LASTEXITCODE
+	
+	if ($ModelDownloaded -eq 0) {
+		Write-Host "📦 Кэш модели Pyannote найден. Копируем в WSL..."
+		wsl -d $DistroName -- bash -c "mkdir -p '$ModelCacheLocalWsl' && cp -r '$ModelCacheWinWsl/'* '$ModelCacheLocalWsl/'"
+
+		Write-Host "✅ Кэш успешно скопирован Windows => WSL."
+	}
+	else {
+		Write-Host "📦 Кэш модели Pyannote не найден. Скачиваем модель с huggingface"
+
+		$PythonLoadScript | Out-File -FilePath $TempPreloadPyFile -Encoding UTF8
+
+		wsl -d $DistroName -- bash -c "python3 '$TempPreloadPyFileWsl'"
+		Remove-Item $TempPreloadPyFile -Force
+
+		Write-Host "📦 Кэш модели Pyannote скачен. Копируем кэш WSL → Windows для будущей оффлайн установки..."
+		wsl -d $DistroName -- bash -c "mkdir -p '$ModelCacheWinWsl' && cp -r '$ModelCacheLocalWsl/'* '$ModelCacheWinWsl/'"
+
+		Write-Host "✅ Кэш скачен и скопирован Windows => WSL."
+	}
+}
+
+Write-Host "✅ Кэш моделей pyannote загружен"
 
 
 
