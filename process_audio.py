@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.0")
+print("\n🔢 Версия скрипта process_audio.py 2.01")
 
 import os
 import shutil
@@ -63,14 +63,16 @@ def kmeans(matrix: np.ndarray, k: int = 2, n_iter: int = 20, seed: int = 0) -> n
     return labels
 
 
-def sincnet_receptive_field(model):
-    rf = 1
+def sincnet_receptive_field_and_stride(model):
+    rf, stride = 1, 1
     for layer in model.sincnet.modules():
         if isinstance(layer, torch.nn.Conv1d):
-            rf = rf + (layer.kernel_size[0] - 1)
+            rf += (layer.kernel_size[0] - 1) * stride
+            stride *= layer.stride
         elif isinstance(layer, torch.nn.MaxPool1d):
             rf = (rf - 1) * layer.stride + 1
-    return rf
+            stride *= layer.stride
+    return rf, stride
 
 
 def extract_phone_number(name: str) -> str | None:
@@ -141,15 +143,11 @@ model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else
 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 audio_reader = Audio(sample_rate=16000)
 embedding_model = Model.from_pretrained("pyannote/embedding")
-tdnn_layer = next(
-    m for m in embedding_model.tdnns if hasattr(m, "kernel_size")
+rf, stride = sincnet_receptive_field_and_stride(embedding_model)
+tdnn_ks = next(
+    m.kernel_size[0] for m in embedding_model.tdnns if hasattr(m, "kernel_size")
 )
-tdnn_ks = (
-    tdnn_layer.kernel_size[0]
-    if isinstance(tdnn_layer.kernel_size, (tuple, list))
-    else tdnn_layer.kernel_size
-)
-min_len = sincnet_receptive_field(embedding_model) + tdnn_ks - 1
+min_len = rf + (tdnn_ks - 1) * stride
 
 all_embeddings = []
 segment_map = {}
@@ -176,9 +174,12 @@ for idx, audio_path in enumerate(wav_files, 1):
             segment_audio if torch.is_tensor(segment_audio) else torch.from_numpy(segment_audio)
         )
         segment_tensor = segment_audio.unsqueeze(0).float()
-        segment_tensor = F.pad(segment_tensor, (0, max(0, min_len - segment_tensor.shape[-1])))
         if segment_tensor.shape[-1] < min_len:
-            continue
+            segment_tensor = F.pad(
+                segment_tensor, (0, min_len - segment_tensor.shape[-1])
+            )
+        if segment_tensor.shape[-1] < min_len:
+            continue  # skip still-too-short segments
         with torch.no_grad():
             emb_tensor = embedding_model(segment_tensor)
         emb_np = emb_tensor.squeeze(0).cpu().numpy()
