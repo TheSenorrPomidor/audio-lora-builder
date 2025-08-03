@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.14")
+print("\n🔢 Версия скрипта process_audio.py 3.0")
 
 import os
 import shutil
@@ -11,11 +11,12 @@ import numpy as np
 import torch
 from pathlib import Path
 import time
-from collections import defaultdict, Counter
+from collections import defaultdict
 import wave
 import contextlib
 from sklearn.cluster import KMeans
 from tqdm import tqdm
+import random
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -69,73 +70,60 @@ def l2_normalize(embeddings):
     norms[norms == 0] = 1
     return embeddings / norms
 
-def create_voice_profile(embedding_model, audio_files, min_common_files=3):
-    """Create voice profile for the most common speaker"""
-    print("\n🔊 Создание профиля голоса...")
+def cosine_similarity(a, b):
+    """Compute cosine similarity between two vectors"""
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def create_reliable_voice_profile(embedding_model, audio_files, num_samples=5):
+    """Create reliable voice profile using diverse samples"""
+    print("\n🔊 Создание надежного профиля голоса...")
     
-    # Собираем все эмбеддинги из всех файлов
-    all_embeddings = []
-    file_embeddings = defaultdict(list)
+    # Собираем эмбеддинги из случайных сегментов
+    candidate_embeddings = []
     audio_reader = Audio(sample_rate=16000, mono=True)
+    device = next(embedding_model.parameters()).device
     
-    for audio_path in tqdm(audio_files, desc="Извлечение эмбеддингов"):
+    # Выбираем случайные файлы для профиля
+    selected_files = random.sample(audio_files, min(len(audio_files), 3))
+    
+    for audio_path in tqdm(selected_files, desc="Сбор эталонных эмбеддингов"):
         try:
             waveform, sample_rate = audio_reader(str(audio_path))
             diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
             
-            for segment in diarization.itertracks(yield_label=True):
-                if isinstance(segment, tuple) and len(segment) == 3:
-                    turn, _, speaker = segment
-                    segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-                    
-                    # Пропускаем слишком короткие сегменты
-                    if segment_audio.shape[1] < 16000 * 0.5:  # Минимум 0.5 секунд
-                        continue
-                    
-                    # Конвертируем в тензор
-                    segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
-                    with torch.no_grad():
-                        embedding = embedding_model(segment_tensor).numpy()[0]
-                    
-                    all_embeddings.append(embedding)
-                    file_embeddings[str(audio_path)].append(embedding)
+            # Выбираем только сегменты длительностью > 3 секунд
+            long_segments = [
+                seg for seg in diarization.itertracks(yield_label=True)
+                if isinstance(seg, tuple) and len(seg) == 3 and (seg[0].end - seg[0].start) > 3.0
+            ]
+            
+            if not long_segments:
+                continue
+                
+            # Выбираем самый длинный сегмент из файла
+            longest_segment = max(long_segments, key=lambda x: x[0].end - x[0].start)
+            turn, _, speaker = longest_segment
+            
+            # Извлекаем эмбеддинг
+            segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
+            segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float().to(device)
+            
+            with torch.no_grad():
+                embedding = embedding_model(segment_tensor).cpu().numpy()[0]
+            
+            candidate_embeddings.append(embedding)
         except Exception as e:
             print(f"  ⚠️ Ошибка при обработке {audio_path.name}: {e}")
     
-    if not all_embeddings:
-        print("⚠️ Не удалось извлечь эмбеддинги")
+    if not candidate_embeddings:
+        print("⚠️ Не удалось собрать эталонные эмбеддинги")
         return None
     
-    # Кластеризация всех эмбеддингов
-    X = np.vstack(all_embeddings)
-    X = l2_normalize(X)
+    # Усредняем эмбеддинги для создания профиля
+    profile = np.mean(candidate_embeddings, axis=0)
+    print(f"✅ Профиль создан на основе {len(candidate_embeddings)} эталонных сегментов")
     
-    # Определяем оптимальное количество кластеров
-    n_clusters = min(10, max(2, len(all_embeddings) // 20))
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    cluster_labels = kmeans.fit_predict(X)
-    
-    # Определяем, какой кластер встречается в наибольшем количестве файлов
-    cluster_files = defaultdict(set)
-    file_idx = 0
-    for file_path, embeddings in file_embeddings.items():
-        for _ in embeddings:
-            cluster_id = cluster_labels[file_idx]
-            cluster_files[cluster_id].add(file_path)
-            file_idx += 1
-    
-    # Выбираем кластер, встречающийся в наибольшем количестве файлов
-    best_cluster = None
-    max_files = 0
-    for cluster_id, files in cluster_files.items():
-        if len(files) > max_files:
-            max_files = len(files)
-            best_cluster = cluster_id
-    
-    print(f"✅ Профиль создан: кластер {best_cluster} найден в {max_files} файлах")
-    
-    # Возвращаем центр кластера как эталонный вектор голоса
-    return kmeans.cluster_centers_[best_cluster]
+    return profile
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -220,19 +208,20 @@ pipeline = Pipeline.from_pretrained(
     use_auth_token=HF_TOKEN
 )
 
-embedding_model = Model.from_pretrained("pyannote/embedding")
+# Инициализируем модель эмбеддингов с явным указанием устройства
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+embedding_model = Model.from_pretrained("pyannote/embedding").to(device)
 audio_reader = Audio(sample_rate=16000, mono=True)
 
 # === 4. Создание голосового профиля ===
-voice_profile = create_voice_profile(embedding_model, wav_files)
+voice_profile = create_reliable_voice_profile(embedding_model, wav_files)
 
-# Если не удалось создать профиль, используем эвристику по длительности
 if voice_profile is None:
-    print("⚠️ Не удалось создать голосовой профиль, используется эвристика по длительности")
-    voice_profile = "duration_fallback"
+    print("⚠️ Не удалось создать голосовой профиль, будет использоваться только диаризация")
+    voice_profile = None
 
-# === 5. Обработка файлов с использованием профиля ===
-print("\n5. 🤖 Распознавание и диаризация с использованием профиля...")
+# === 5. Обработка файлов ===
+print("\n5. 🤖 Распознавание и диаризация...")
 start_all = time.time()
 processed_files = 0
 
@@ -254,7 +243,7 @@ for idx, audio_path in enumerate(wav_files, 1):
         print("  🎤 Диаризация...")
         diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
         
-        # Собираем сегменты и их эмбеддинги
+        # Собираем сегменты
         segments = []
         for segment in diarization.itertracks(yield_label=True):
             if isinstance(segment, tuple) and len(segment) == 3:
@@ -264,106 +253,75 @@ for idx, audio_path in enumerate(wav_files, 1):
                 if turn.end - turn.start < 0.5:
                     continue
                     
-                segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-                segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
-                
-                with torch.no_grad():
-                    embedding = embedding_model(segment_tensor).numpy()[0]
-                
                 segments.append({
                     "start": turn.start,
                     "end": turn.end,
                     "speaker": speaker,
-                    "embedding": embedding
                 })
         
-        # Определение спикеров с использованием голосового профиля
-        if isinstance(voice_profile, np.ndarray):
+        # Если есть голосовой профиль, вычисляем эмбеддинги и определяем "я"
+        if voice_profile is not None:
+            print("  🔍 Определение спикеров с помощью профиля...")
             for seg in segments:
-                # Улучшенное сравнение эмбеддингов
-                current_emb = seg["embedding"].reshape(1, -1)
-                current_emb_norm = l2_normalize(current_emb)
-                profile_norm = l2_normalize(voice_profile.reshape(1, -1))
+                segment_audio = waveform[:, int(seg["start"] * sample_rate):int(seg["end"] * sample_rate)]
+                segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float().to(device)
+                
+                with torch.no_grad():
+                    embedding = embedding_model(segment_tensor).cpu().numpy()[0]
                 
                 # Вычисляем косинусное сходство
-                similarity = np.dot(current_emb_norm, profile_norm.T)[0][0]
+                similarity = cosine_similarity(l2_normalize(embedding), l2_normalize(voice_profile))
+                seg["is_you"] = similarity > 0.5
                 
-                # Упрощенный порог для плохого качества звука
-                seg["is_you"] = similarity > 0.5  # Пониженный порог
-                
-                # Отладочная информация
-                print(f"  🔍 Сегмент {seg['start']:.2f}-{seg['end']:.2f}: "
+                print(f"    Сегмент {seg['start']:.2f}-{seg['end']:.2f}: "
                       f"сходство={similarity:.2f}, is_you={seg['is_you']}")
         else:
-            # Эвристика по длительности (если не удалось создать профиль)
-            total_durations = defaultdict(float)
-            for seg in segments:
-                duration = seg["end"] - seg["start"]
-                total_durations[seg["speaker"]] += duration
-            
-            if total_durations:
-                main_speaker = max(total_durations, key=total_durations.get)
+            print("  ⚠️ Голосовой профиль недоступен, используется простая эвристика")
+            # Эвристика: первый спикер - собеседник, второй - вы
+            speakers = {seg["speaker"] for seg in segments}
+            if len(speakers) == 2:
+                speaker_roles = {list(speakers)[0]: False, list(speakers)[1]: True}
                 for seg in segments:
-                    seg["is_you"] = seg["speaker"] == main_speaker
+                    seg["is_you"] = speaker_roles[seg["speaker"]]
+            else:
+                # Если не удалось определить 2 спикеров, помечаем все как собеседника
+                for seg in segments:
+                    seg["is_you"] = False
         
-        # Транскрибация с адаптацией для плохого качества звука
-        print("  📝 Транскрибация (с адаптацией для плохого качества)...")
+        # Транскрибация
+        print("  📝 Транскрибация...")
         transcriptions, _ = whisper_model.transcribe(
             str(audio_path),
             language="ru",
-            beam_size=10,  # Увеличенный размер луча
+            beam_size=5,
             vad_filter=True,
-            word_timestamps=False,
-            condition_on_previous_text=False,  # Улучшение для коротких сегментов
-            no_speech_threshold=0.5,  # Более низкий порог для распознавания речи
-            compression_ratio_threshold=2.5  # Более мягкий порог для плохого качества
+            word_timestamps=False
         )
         transcriptions = list(transcriptions)
-        print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         
-        # Улучшенное сопоставление транскрипции с сегментами
+        # Сопоставляем транскрипцию с сегментами
         for seg in segments:
             seg_text = []
-            best_overlap = 0
-            
             for t in transcriptions:
-                # Рассчитываем перекрытие
+                # Проверяем перекрытие не менее 50%
                 overlap_start = max(t.start, seg["start"])
                 overlap_end = min(t.end, seg["end"])
                 overlap_duration = max(0, overlap_end - overlap_start)
                 
-                # Рассчитываем процент перекрытия
-                seg_duration = seg["end"] - seg["start"]
                 t_duration = t.end - t.start
-                overlap_percent = overlap_duration / min(seg_duration, t_duration) if min(seg_duration, t_duration) > 0 else 0
+                seg_duration = seg["end"] - seg["start"]
                 
-                # Выбираем лучшее соответствие
-                if overlap_percent > best_overlap:
-                    best_overlap = overlap_percent
-                    best_text = t.text
+                if overlap_duration / min(t_duration, seg_duration) > 0.5:
+                    seg_text.append(t.text)
             
-            # Если найдено хорошее соответствие, используем текст
-            if best_overlap > 0.5:
-                seg["text"] = best_text
-            else:
-                seg["text"] = ""
+            seg["text"] = " ".join(seg_text).strip()
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Преобразуем в формат для записи
-        json_segments = []
-        for seg in segments:
-            json_segments.append({
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"],
-                "is_you": seg["is_you"]
-            })
-        
-        write_json(json_segments, output_path, rel_path, "0000000000000", caller_id)
-        print(f"  💾 Сохранено сегментов: {len(json_segments)} → {output_path}")
+        write_json(segments, output_path, rel_path, "0000000000000", caller_id)
+        print(f"  💾 Сохранено {len(segments)} сегментов → {output_path}")
         processed_files += 1
         
     except Exception as e:
