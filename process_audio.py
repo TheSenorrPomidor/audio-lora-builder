@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 3.3")
+print("\n🔢 Версия скрипта process_audio.py 3.4")
 
 import os
 import shutil
@@ -14,7 +14,6 @@ import time
 from collections import defaultdict
 import wave
 import contextlib
-import random
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -74,56 +73,61 @@ def cosine_similarity(a, b):
     b = b.flatten()
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def create_reliable_voice_profile(embedding_model, audio_files, num_samples=5):
-    """Create reliable voice profile using diverse samples"""
-    print("\n🔊 Создание надежного профиля голоса...")
+def create_voice_profile(embedding_model, audio_files):
+    """Create voice profile using the longest high-quality segment"""
+    print("\n🔊 Создание голосового профиля...")
     
-    # Собираем эмбеддинги из случайных сегментов
-    candidate_embeddings = []
-    audio_reader = Audio(sample_rate=16000, mono=True)
-    device = next(embedding_model.parameters()).device
+    # Найдем файл с максимальной длительностью
+    max_duration = 0
+    selected_file = None
+    for audio_path in audio_files:
+        duration = get_audio_duration(audio_path)
+        if duration > max_duration:
+            max_duration = duration
+            selected_file = audio_path
     
-    # Выбираем случайные файлы для профиля
-    selected_files = random.sample(audio_files, min(len(audio_files), 3))
-    
-    for audio_path in selected_files:
-        try:
-            waveform, sample_rate = audio_reader(str(audio_path))
-            diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
-            
-            # Выбираем только сегменты длительностью > 3 секунд
-            long_segments = [
-                seg for seg in diarization.itertracks(yield_label=True)
-                if isinstance(seg, tuple) and len(seg) == 3 and (seg[0].end - seg[0].start) > 3.0
-            ]
-            
-            if not long_segments:
-                continue
-                
-            # Выбираем самый длинный сегмент из файла
-            longest_segment = max(long_segments, key=lambda x: x[0].end - x[0].start)
-            turn, _, speaker = longest_segment
-            
-            # Извлекаем эмбеддинг
-            segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-            segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float().to(device)
-            
-            with torch.no_grad():
-                embedding = embedding_model(segment_tensor).cpu().numpy()[0]
-            
-            candidate_embeddings.append(embedding)
-        except Exception as e:
-            print(f"  ⚠️ Ошибка при обработке {audio_path.name}: {e}")
-    
-    if not candidate_embeddings:
-        print("⚠️ Не удалось собрать эталонные эмбеддинги")
+    if not selected_file:
+        print("⚠️ Не удалось выбрать файл для профиля")
         return None
     
-    # Усредняем эмбеддинги для создания профиля
-    profile = np.mean(candidate_embeddings, axis=0)
-    print(f"✅ Профиль создан на основе {len(candidate_embeddings)} эталонных сегментов")
+    print(f"  Используем файл: {selected_file.name}")
     
-    return profile
+    try:
+        audio_reader = Audio(sample_rate=16000, mono=True)
+        waveform, sample_rate = audio_reader(str(selected_file))
+        diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        
+        # Найдем самый длинный сегмент
+        longest_segment = None
+        max_duration = 0
+        for segment in diarization.itertracks(yield_label=True):
+            if isinstance(segment, tuple) and len(segment) == 3:
+                turn, _, speaker = segment
+                duration = turn.end - turn.start
+                if duration > max_duration and duration > 3.0:  # Минимум 3 секунды
+                    max_duration = duration
+                    longest_segment = (turn, speaker)
+        
+        if not longest_segment:
+            print("⚠️ Не найдены подходящие сегменты для профиля")
+            return None
+        
+        turn, speaker = longest_segment
+        print(f"  Используем сегмент: {turn.start:.2f}-{turn.end:.2f} ({max_duration:.2f} сек)")
+        
+        # Извлекаем эмбеддинг
+        segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
+        segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float().to(device)
+        
+        with torch.no_grad():
+            embedding = embedding_model(segment_tensor).cpu().numpy()[0]
+        
+        print("✅ Профиль создан")
+        return embedding
+        
+    except Exception as e:
+        print(f"  ❌ Ошибка создания профиля: {e}")
+        return None
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -196,31 +200,36 @@ if not wav_files:
     print("⚠️ Нет файлов для обработки")
     exit(0)
 
+# Определение устройства
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"  Используемое устройство: {device}")
+
 # Инициализация диаризации
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1",
     use_auth_token=HF_TOKEN
 )
 
-# Инициализируем модель эмбеддингов
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Инициализация модели эмбеддингов
 embedding_model = Model.from_pretrained("pyannote/embedding").to(device)
 audio_reader = Audio(sample_rate=16000, mono=True)
 
-# === 4. Создание голосового профиля ===
-voice_profile = create_reliable_voice_profile(embedding_model, wav_files)
-
-if voice_profile is None:
-    print("⚠️ Не удалось создать голосовой профиль, будет использоваться только диаризация")
-    voice_profile = None
-
-# Инициализация Whisper на CPU
-print("  ⚙️ Инициализация Whisper на CPU...")
+# Инициализация Whisper
+whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+whisper_compute_type = "float16" if torch.cuda.is_available() else "int8"
+print(f"  Инициализация Whisper на {whisper_device.upper()}...")
 whisper_model = WhisperModel(
     "large-v3",
-    device="cpu",
-    compute_type="int8"
+    device=whisper_device,
+    compute_type=whisper_compute_type
 )
+
+# === 4. Создание голосового профиля ===
+voice_profile = create_voice_profile(embedding_model, wav_files)
+
+if voice_profile is None:
+    print("⚠️ Не удалось создать голосовой профиль, будет использоваться эвристика")
+    voice_profile = None
 
 # === 5. Обработка файлов ===
 print("\n5. 🤖 Распознавание и диаризация...")
@@ -261,9 +270,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                     "speaker": speaker,
                 })
         
-        # Если есть голосовой профиль, вычисляем эмбеддинги и определяем "я"
+        # Определение спикеров
         if voice_profile is not None:
-            print("  🔍 Определение спикеров с помощью профиля...")
+            print("  🔍 Определение спикеров...")
             for seg in segments:
                 segment_audio = waveform[:, int(seg["start"] * sample_rate):int(seg["end"] * sample_rate)]
                 segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float().to(device)
@@ -271,70 +280,49 @@ for idx, audio_path in enumerate(wav_files, 1):
                 with torch.no_grad():
                     embedding = embedding_model(segment_tensor).cpu().numpy()[0]
                 
-                # Вычисляем косинусное сходство
                 similarity = cosine_similarity(embedding, voice_profile)
-                seg["is_you"] = similarity > 0.5
+                seg["is_you"] = similarity > 0.7  # Более строгий порог
                 
                 print(f"    Сегмент {seg['start']:.2f}-{seg['end']:.2f}: "
                       f"сходство={similarity:.2f}, is_you={seg['is_you']}")
         else:
-            print("  ⚠️ Голосовой профиль недоступен, используется простая эвристика")
-            # Эвристика: первый спикер - собеседник, второй - вы
-            speakers = {seg["speaker"] for seg in segments}
-            if len(speakers) == 2:
-                speaker_roles = {list(speakers)[0]: False, list(speakers)[1]: True}
-                for seg in segments:
-                    seg["is_you"] = speaker_roles[seg["speaker"]]
-            else:
-                # Если не удалось определить 2 спикеров, помечаем все как собеседника
-                for seg in segments:
-                    seg["is_you"] = False
+            print("  ⚠️ Используем эвристику для определения спикеров")
+            # Эвристика: первый спикер - собеседник, последующие - вы
+            speakers = list({seg["speaker"] for seg in segments})
+            speaker_roles = {}
+            for i, spk in enumerate(speakers):
+                speaker_roles[spk] = (i != 0)  # Первый спикер = собеседник
+            
+            for seg in segments:
+                seg["is_you"] = speaker_roles[seg["speaker"]]
         
-        # Транскрибация на CPU
-        print("  📝 Транскрибация на CPU...")
-        try:
-            transcriptions, _ = whisper_model.transcribe(
-                str(audio_path),
-                language="ru",
-                beam_size=5,
-                vad_filter=True,
-                word_timestamps=False
-            )
-            transcriptions = list(transcriptions)
-            print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
-        except Exception as e:
-            print(f"  ❌ Ошибка транскрибации: {e}")
-            transcriptions = []
+        # Транскрибация
+        print("  📝 Транскрибация...")
+        transcriptions, _ = whisper_model.transcribe(
+            str(audio_path),
+            language="ru",
+            beam_size=5,
+            vad_filter=True,
+            word_timestamps=False
+        )
+        transcriptions = list(transcriptions)
+        print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         
         # Сопоставляем транскрипцию с сегментами
         for seg in segments:
             seg_text = []
-            best_match = ""
-            best_overlap = 0
-            
             for t in transcriptions:
-                # Рассчитываем перекрытие
-                overlap_start = max(t.start, seg["start"])
-                overlap_end = min(t.end, seg["end"])
-                overlap_duration = max(0, overlap_end - overlap_start)
+                # Проверяем значительное перекрытие
+                if t.end < seg["start"] or t.start > seg["end"]:
+                    continue
+                    
+                overlap = min(t.end, seg["end"]) - max(t.start, seg["start"])
+                overlap_percent = overlap / (seg["end"] - seg["start"])
                 
-                # Рассчитываем процент перекрытия
-                seg_duration = seg["end"] - seg["start"]
-                if seg_duration > 0:
-                    overlap_percent = overlap_duration / seg_duration
-                else:
-                    overlap_percent = 0
-                
-                # Выбираем лучший вариант
-                if overlap_percent > best_overlap:
-                    best_overlap = overlap_percent
-                    best_match = t.text
+                if overlap_percent > 0.5:  # >50% перекрытия
+                    seg_text.append(t.text)
             
-            # Если найдено хорошее соответствие, используем текст
-            if best_overlap > 0.3:
-                seg["text"] = best_match
-            else:
-                seg["text"] = ""
+            seg["text"] = " ".join(seg_text).strip()
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
@@ -345,7 +333,7 @@ for idx, audio_path in enumerate(wav_files, 1):
         processed_files += 1
         
     except Exception as e:
-        print(f"  ❌ Критическая ошибка при обработке файла: {e}")
+        print(f"  ❌ Ошибка при обработке файла: {e}")
         continue
 
 total_time = format_hhmmss(time.time() - start_all)
