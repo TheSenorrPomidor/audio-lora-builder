@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.27 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.40 (Stable GPU)")
 
 import os
 import shutil
@@ -15,8 +15,6 @@ from collections import defaultdict
 import wave
 import contextlib
 from sklearn.cluster import KMeans
-import tempfile
-import soundfile as sf
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -170,7 +168,7 @@ pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1",
     use_auth_token=HF_TOKEN
 )
-audio_reader = Audio(sample_rate=16000, mono=True)
+audio_reader = Audio(sample_rate=16000, mono='downmix')
 
 # Модель для извлечения эмбеддингов
 embedding_model = Inference(
@@ -196,11 +194,8 @@ for idx, audio_path in enumerate(wav_files, 1):
     print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
     
     try:
-        # Загрузка аудио как массива numpy
-        waveform, sample_rate = audio_reader(str(audio_path))
-        
         # Диаризация
-        diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        diarization = pipeline(str(audio_path), num_speakers=2)
         
         # Сохраняем данные диаризации
         file_segments = []
@@ -218,37 +213,35 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
-                    # Получаем сегмент аудио
-                    chunk = audio_reader.crop(waveform, seg)
+                    # Создаем входные данные для извлечения сегмента
+                    input_dict = {
+                        "audio": str(audio_path),
+                        "offset": seg.start,
+                        "duration": seg.duration
+                    }
                     
-                    # Преобразуем в формат float32
-                    chunk_float = chunk.astype(np.float32)
+                    # Извлекаем сегмент аудио
+                    waveform, sample_rate = audio_reader.crop(input_dict)
                     
                     # Нормализуем аудио
-                    max_val = np.max(np.abs(chunk_float))
+                    max_val = np.max(np.abs(waveform))
                     if max_val > 0:
-                        chunk_float /= max_val
+                        waveform /= max_val
                     
-                    # Создаем временный WAV файл с правильными параметрами
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_wav:
-                        # Сохраняем сегмент во временный WAV файл
-                        sf.write(
-                            temp_wav.name, 
-                            chunk_float.T, 
-                            sample_rate, 
-                            format='WAV',
-                            subtype='PCM_16'
-                        )
-                        
-                        # Проверяем размер файла
-                        if os.path.getsize(temp_wav.name) == 0:
-                            print("    ⚠️ Временный файл пустой, пропускаем сегмент")
-                            continue
-                            
-                        # Извлекаем эмбеддинг из файла
-                        # ПРАВИЛЬНЫЙ ФОРМАТ: словарь с ключом "audio"
-                        embedding = embedding_model({"audio": temp_wav.name})
-                        speaker_embeddings[speaker].append(embedding)
+                    # Преобразуем в torch.Tensor
+                    tensor = torch.from_numpy(waveform).float()
+                    
+                    # Обеспечиваем правильную размерность (каналы, время)
+                    if tensor.ndim == 1:
+                        tensor = tensor.unsqueeze(0)  # (1, time)
+                    
+                    # Извлекаем эмбеддинг
+                    embedding = embedding_model({
+                        "waveform": tensor, 
+                        "sample_rate": sample_rate
+                    })
+                    
+                    speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}")
                     continue
@@ -331,7 +324,6 @@ for idx, audio_path in enumerate(wav_files, 1):
     print(f"\n📝 ({idx}/{len(wav_files)}) {rel_path}")
     
     try:
-        waveform, sample_rate = audio_reader(str(audio_path))
         file_segments = diarization_data[audio_path]
         
         # Создаем структуру для обогащенных сегментов
