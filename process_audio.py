@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.40 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.41 (Stable GPU)")
 
 import os
 import shutil
@@ -213,15 +213,11 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
-                    # Создаем входные данные для извлечения сегмента
-                    input_dict = {
-                        "audio": str(audio_path),
-                        "offset": seg.start,
-                        "duration": seg.duration
-                    }
-                    
-                    # Извлекаем сегмент аудио
-                    waveform, sample_rate = audio_reader.crop(input_dict)
+                    # ПРАВИЛЬНЫЙ ВЫЗОВ: crop(file, segment)
+                    waveform, sample_rate = audio_reader.crop(
+                        str(audio_path),  # Путь к файлу
+                        seg                # Объект Segment
+                    )
                     
                     # Нормализуем аудио
                     max_val = np.max(np.abs(waveform))
