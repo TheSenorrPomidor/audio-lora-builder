@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.14 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.15 (Stable GPU)")
 
 import os
 import shutil
@@ -14,11 +14,13 @@ import time
 from collections import defaultdict
 import wave
 import contextlib
+from sklearn.cluster import KMeans
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
+from pyannote.audio import Inference
 
 # === 0. Функции ===
 def write_json(segments, json_path, rel_path, you_id, caller_id):
@@ -66,22 +68,20 @@ def l2_normalize(embeddings):
     norms[norms == 0] = 1
     return embeddings / norms
 
-def assign_speaker_roles(diarization, audio_duration):
-    """Identify which speaker is 'you' based on speech duration"""
-    speaker_durations = defaultdict(float)
+def average_pairwise_similarity(embeddings):
+    """Calculate average cosine similarity for embeddings"""
+    n = len(embeddings)
+    if n < 2:
+        return 0.0
     
-    for segment in diarization.itertracks(yield_label=True):
-        if isinstance(segment, tuple) and len(segment) == 3:
-            turn, _, speaker = segment
-            duration = turn.end - turn.start
-            speaker_durations[speaker] += duration
-    
-    if not speaker_durations:
-        return {}
-    
-    # The speaker with the longest total duration is "you"
-    you_speaker = max(speaker_durations, key=speaker_durations.get)
-    return {speaker: (speaker == you_speaker) for speaker in speaker_durations}
+    total = 0.0
+    count = 0
+    for i in range(n):
+        for j in range(i+1, n):
+            total += np.dot(embeddings[i], embeddings[j])
+            count += 1
+            
+    return total / count if count > 0 else 0.0
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -161,7 +161,7 @@ start_all = time.time()
 whisper_model = WhisperModel(
     "large-v3",
     device="cuda" if torch.cuda.is_available() else "cpu",
-    compute_type="float16"  # Используем float16 для лучшей совместимости
+    compute_type="float16"
 )
 
 pipeline = Pipeline.from_pretrained(
@@ -170,6 +170,96 @@ pipeline = Pipeline.from_pretrained(
 )
 audio_reader = Audio(sample_rate=16000, mono=True)
 
+# Модель для извлечения эмбеддингов
+embedding_model = Inference(
+    "pyannote/embedding",
+    pre_aggregation_hook=lambda spec: np.mean(spec, axis=-1)
+)
+
+# === Первый проход: извлечение эмбеддингов ===
+print("🔍 Первый проход: извлечение голосовых эмбеддингов...")
+all_embeddings = []
+all_file_names = []
+all_speaker_keys = []
+diarization_data = {}
+
+for idx, audio_path in enumerate(wav_files, 1):
+    rel_path = audio_path.relative_to(DST)
+    output_path = OUTPUT_DIR / rel_path.with_suffix(".json")
+    
+    if output_path.exists():
+        print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
+        continue
+        
+    print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
+    
+    try:
+        waveform, sample_rate = audio_reader(str(audio_path))
+        diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        
+        # Сохраняем данные диаризации
+        file_segments = []
+        speaker_embeddings = defaultdict(list)
+        
+        for segment in diarization.itertracks(yield_label=True):
+            if isinstance(segment, tuple) and len(segment) == 3:
+                turn, _, speaker = segment
+                seg = Segment(turn.start, turn.end)
+                file_segments.append((turn.start, turn.end, speaker))
+                
+                # Извлекаем эмбеддинг для сегмента
+                chunk = audio_reader.crop(waveform, seg)
+                embedding = embedding_model({"waveform": chunk, "sample_rate": sample_rate})
+                speaker_embeddings[speaker].append(embedding[0])
+        
+        diarization_data[audio_path] = file_segments
+        
+        # Усредняем эмбеддинги по спикерам
+        for speaker, embeddings_list in speaker_embeddings.items():
+            avg_embedding = np.mean(embeddings_list, axis=0)
+            avg_embedding = l2_normalize(avg_embedding).flatten()
+            all_embeddings.append(avg_embedding)
+            all_file_names.append(audio_path.name)
+            all_speaker_keys.append(speaker)
+            
+    except Exception as e:
+        print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}")
+
+# Кластеризация эмбеддингов
+if not all_embeddings:
+    print("⚠️ Не удалось извлечь эмбеддинги, выход")
+    exit(1)
+
+print("🔮 Кластеризация спикеров...")
+embeddings_array = np.array(all_embeddings)
+kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_array)
+labels = kmeans.labels_
+
+# Определяем кластер для "я" по внутрикластерному сходству
+cluster0_mask = (labels == 0)
+cluster1_mask = (labels == 1)
+
+cluster0_emb = embeddings_array[cluster0_mask]
+cluster1_emb = embeddings_array[cluster1_mask]
+
+sim0 = average_pairwise_similarity(cluster0_emb)
+sim1 = average_pairwise_similarity(cluster1_emb)
+
+if sim0 > sim1:
+    me_cluster = 0
+else:
+    me_cluster = 1
+
+# Создаем словарь для определения ролей
+speaker_roles = {}
+for i in range(len(all_embeddings)):
+    file_name = all_file_names[i]
+    speaker_key = all_speaker_keys[i]
+    cluster_id = labels[i]
+    speaker_roles[(file_name, speaker_key)] = (cluster_id == me_cluster)
+
+# === Второй проход: транскрипция ===
+print("🔍 Второй проход: транскрипция и формирование JSON...")
 processed_files = 0
 
 for idx, audio_path in enumerate(wav_files, 1):
@@ -180,27 +270,30 @@ for idx, audio_path in enumerate(wav_files, 1):
         print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
         continue
         
+    # Пропускаем файлы без данных диаризации
+    if audio_path not in diarization_data:
+        print(f"  ⚠️ ({idx}/{len(wav_files)}) Пропуск (нет данных диаризации): {rel_path}")
+        continue
+        
     print(f"\n📝 ({idx}/{len(wav_files)}) {rel_path}")
     
     try:
-        # Получаем длительность аудио
-        audio_duration = get_audio_duration(audio_path)
-        
-        # Загрузка аудио
         waveform, sample_rate = audio_reader(str(audio_path))
+        file_segments = diarization_data[audio_path]
         
-        # Диаризация
-        print("  🎤 Диаризация...")
-        diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        # Создаем структуру для обогащенных сегментов
+        diarization_segments = []
+        for start, end, speaker in file_segments:
+            is_you = speaker_roles.get((audio_path.name, speaker), False)
+            diarization_segments.append({
+                "start": start,
+                "end": end,
+                "speaker": speaker,
+                "is_you": is_you,
+                "text_candidates": []
+            })
         
-        # Определяем кто есть кто
-        speaker_roles = assign_speaker_roles(diarization, audio_duration)
-        if not speaker_roles:
-            print("  ⚠️ Не удалось определить спикеров")
-            continue
-            
         # Транскрибация
-        print("  📝 Транскрибация...")
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
@@ -211,38 +304,15 @@ for idx, audio_path in enumerate(wav_files, 1):
         transcriptions = list(segments)
         print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         
-        # Сопоставляем диаризацию с транскрипцией
-        enriched_segments = []
-        
-        # Собираем все сегменты диаризации
-        diarization_segments = []
-        for segment in diarization.itertracks(yield_label=True):
-            if isinstance(segment, tuple) and len(segment) == 3:
-                turn, _, speaker = segment
-                diarization_segments.append({
-                    "start": turn.start,
-                    "end": turn.end,
-                    "speaker": speaker,
-                    "is_you": speaker_roles.get(speaker, False),
-                    "text_candidates": []
-                })
-        
-        # Сортируем по времени начала
-        diarization_segments.sort(key=lambda x: x["start"])
-        
-        # Сопоставляем текстовые сегменты с диаризацией
+        # Сопоставляем транскрипции с диаризацией
         for t in transcriptions:
-            # Ищем лучший сегмент диаризации по перекрытию
             best_overlap = 0
             best_segment = None
             
             for d_seg in diarization_segments:
-                # Рассчитываем перекрытие
                 overlap_start = max(t.start, d_seg["start"])
                 overlap_end = min(t.end, d_seg["end"])
                 overlap_duration = max(0, overlap_end - overlap_start)
-                
-                # Рассчитываем процент перекрытия
                 t_duration = t.end - t.start
                 overlap_percent = overlap_duration / t_duration if t_duration > 0 else 0
                 
@@ -250,16 +320,14 @@ for idx, audio_path in enumerate(wav_files, 1):
                     best_overlap = overlap_percent
                     best_segment = d_seg
             
-            # Добавляем текст к лучшему сегменту
-            if best_segment and best_overlap > 0.3:  # Минимум 30% перекрытия
+            if best_segment and best_overlap > 0.3:
                 best_segment["text_candidates"].append(t.text)
         
         # Формируем окончательные сегменты
+        enriched_segments = []
         for d_seg in diarization_segments:
             if d_seg["text_candidates"]:
-                # Объединяем тексты
                 combined_text = " ".join(d_seg["text_candidates"])
-                
                 enriched_segments.append({
                     "start": d_seg["start"],
                     "end": d_seg["end"],
@@ -276,7 +344,6 @@ for idx, audio_path in enumerate(wav_files, 1):
         
     except Exception as e:
         print(f"  ❌ Ошибка при обработке файла: {e}")
-        continue
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
