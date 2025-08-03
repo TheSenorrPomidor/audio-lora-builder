@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.23 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.25 (Stable GPU)")
 
 import os
 import shutil
@@ -17,6 +17,7 @@ import contextlib
 from sklearn.cluster import KMeans
 import tempfile
 import soundfile as sf
+import torchaudio
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -221,11 +222,30 @@ for idx, audio_path in enumerate(wav_files, 1):
                     # Получаем сегмент аудио
                     chunk = audio_reader.crop(waveform, seg)
                     
-                    # Создаем временный WAV файл
+                    # Преобразуем в формат float32
+                    chunk_float = chunk.astype(np.float32)
+                    
+                    # Нормализуем аудио
+                    max_val = np.max(np.abs(chunk_float))
+                    if max_val > 0:
+                        chunk_float /= max_val
+                    
+                    # Создаем временный WAV файл с правильными параметрами
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_wav:
                         # Сохраняем сегмент во временный WAV файл
-                        sf.write(temp_wav.name, chunk.T, sample_rate, format='WAV')
+                        sf.write(
+                            temp_wav.name, 
+                            chunk_float.T, 
+                            sample_rate, 
+                            format='WAV',
+                            subtype='PCM_16'
+                        )
                         
+                        # Проверяем размер файла
+                        if os.path.getsize(temp_wav.name) == 0:
+                            print("    ⚠️ Временный файл пустой, пропускаем сегмент")
+                            continue
+                            
                         # Извлекаем эмбеддинг из файла
                         embedding = embedding_model(temp_wav.name)
                         speaker_embeddings[speaker].append(embedding)
