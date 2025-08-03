@@ -16,6 +16,9 @@ wsl -d $Distro -- rm -f $TargetLinuxFile
 # 3. Читаем содержимое Python-файла и копируем в WSL через echo в bash
 Get-Content $ScriptPath -Raw | wsl -d $Distro -- bash -c "cat > $TargetLinuxFile"
 
+#Временно -  удаляем папку с результатом предыдущего прогона
+wsl -d $Distro -- bash -c "rm -rf /root/audio-lora-builder/output/*"
+
 # 4. Запускаем
 Write-Host "▶️ Запускаем process_audio.py в WSL..."
 wsl -d $Distro -- python3 $TargetLinuxFile
