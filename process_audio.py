@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.17 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.19 (Stable GPU)")
 
 import os
 import shutil
@@ -219,12 +219,10 @@ for idx, audio_path in enumerate(wav_files, 1):
                     # Получаем сегмент аудио
                     chunk = audio_reader.crop(waveform, seg)
                     
-                    # Правильный формат входных данных для модели эмбеддингов
+                    # Правильный формат входных данных для pyannote.audio 3.3.2
                     input_data = {
-                        "audio": {
-                            "waveform": torch.from_numpy(chunk).float(),
-                            "sample_rate": sample_rate
-                        }
+                        "waveform": torch.from_numpy(chunk).float(),
+                        "sample_rate": sample_rate
                     }
                     
                     # Извлекаем эмбеддинг
