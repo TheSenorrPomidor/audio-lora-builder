@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 3.1")
+print("\n🔢 Версия скрипта process_audio.py 3.2")
 
 import os
 import shutil
@@ -196,13 +196,7 @@ if not wav_files:
     print("⚠️ Нет файлов для обработки")
     exit(0)
 
-# Инициализация моделей
-whisper_model = WhisperModel(
-    "large-v3",
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    compute_type="float16" if torch.cuda.is_available() else "int8"
-)
-
+# Инициализация диаризации
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1",
     use_auth_token=HF_TOKEN
@@ -224,6 +218,10 @@ if voice_profile is None:
 print("\n5. 🤖 Распознавание и диаризация...")
 start_all = time.time()
 processed_files = 0
+
+# Инициализация Whisper с учетом возможных проблем CUDA
+whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+whisper_compute_type = "int8"  # Используем int8 для лучшей совместимости
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
@@ -288,16 +286,50 @@ for idx, audio_path in enumerate(wav_files, 1):
                 for seg in segments:
                     seg["is_you"] = False
         
-        # Транскрибация
+        # Транскрибация с защитой от ошибок CUDA
         print("  📝 Транскрибация...")
-        transcriptions, _ = whisper_model.transcribe(
-            str(audio_path),
-            language="ru",
-            beam_size=5,
-            vad_filter=True,
-            word_timestamps=False
-        )
-        transcriptions = list(transcriptions)
+        try:
+            # Очищаем память CUDA перед запуском Whisper
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Инициализируем Whisper непосредственно перед использованием
+            whisper_model = WhisperModel(
+                "large-v3",
+                device=whisper_device,
+                compute_type=whisper_compute_type
+            )
+            
+            transcriptions, _ = whisper_model.transcribe(
+                str(audio_path),
+                language="ru",
+                beam_size=5,
+                vad_filter=True,
+                word_timestamps=False
+            )
+            transcriptions = list(transcriptions)
+        except Exception as e:
+            print(f"  ❌ Ошибка транскрибации: {e}")
+            # Пробуем использовать CPU как запасной вариант
+            print("  ⚠️ Пробуем транскрибацию на CPU...")
+            whisper_model = WhisperModel(
+                "large-v3",
+                device="cpu",
+                compute_type="int8"
+            )
+            transcriptions, _ = whisper_model.transcribe(
+                str(audio_path),
+                language="ru",
+                beam_size=5,
+                vad_filter=True,
+                word_timestamps=False
+            )
+            transcriptions = list(transcriptions)
+        finally:
+            # Освобождаем ресурсы Whisper
+            del whisper_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Сопоставляем транскрипцию с сегментами
         for seg in segments:
@@ -325,7 +357,10 @@ for idx, audio_path in enumerate(wav_files, 1):
         processed_files += 1
         
     except Exception as e:
-        print(f"  ❌ Ошибка при обработке файла: {e}")
+        print(f"  ❌ Критическая ошибка при обработке файла: {e}")
+        # Освобождаем память CUDA после ошибки
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         continue
 
 total_time = format_hhmmss(time.time() - start_all)
