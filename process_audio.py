@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.25 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.27 (Stable GPU)")
 
 import os
 import shutil
@@ -17,7 +17,6 @@ import contextlib
 from sklearn.cluster import KMeans
 import tempfile
 import soundfile as sf
-import torchaudio
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -217,7 +216,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 if seg.duration < 0.1:  # 100 ms
                     continue
                 
-                # Извлекаем эмбеддинг для сегмента через временный файл
+                # Извлекаем эмбеддинг для сегмента
                 try:
                     # Получаем сегмент аудио
                     chunk = audio_reader.crop(waveform, seg)
@@ -247,7 +246,8 @@ for idx, audio_path in enumerate(wav_files, 1):
                             continue
                             
                         # Извлекаем эмбеддинг из файла
-                        embedding = embedding_model(temp_wav.name)
+                        # ПРАВИЛЬНЫЙ ФОРМАТ: словарь с ключом "audio"
+                        embedding = embedding_model({"audio": temp_wav.name})
                         speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}")
