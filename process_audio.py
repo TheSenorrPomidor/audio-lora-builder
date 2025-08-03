@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.21 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.23 (Stable GPU)")
 
 import os
 import shutil
@@ -16,6 +16,7 @@ import wave
 import contextlib
 from sklearn.cluster import KMeans
 import tempfile
+import soundfile as sf
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -83,15 +84,6 @@ def average_pairwise_similarity(embeddings):
             count += 1
             
     return total / count if count > 0 else 0.0
-
-def save_segment_to_wav(audio_reader, waveform, segment, sample_rate, output_path):
-    """Save audio segment to temporary WAV file"""
-    chunk = audio_reader.crop(waveform, segment)
-    with wave.open(str(output_path), 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit PCM
-        wf.setframerate(sample_rate)
-        wf.writeframes((chunk * 32767).astype(np.int16).tobytes())
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -226,9 +218,13 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Извлекаем эмбеддинг для сегмента через временный файл
                 try:
+                    # Получаем сегмент аудио
+                    chunk = audio_reader.crop(waveform, seg)
+                    
+                    # Создаем временный WAV файл
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_wav:
                         # Сохраняем сегмент во временный WAV файл
-                        save_segment_to_wav(audio_reader, waveform, seg, sample_rate, temp_wav.name)
+                        sf.write(temp_wav.name, chunk.T, sample_rate, format='WAV')
                         
                         # Извлекаем эмбеддинг из файла
                         embedding = embedding_model(temp_wav.name)
