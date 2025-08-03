@@ -1,18 +1,17 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.01")
+print("\n🔢 Версия скрипта process_audio.py 2.02")
 
 import os
 import shutil
 import json
 import subprocess
 import re
-from pathlib import Path
-import time
-from collections import Counter
 import numpy as np
 import torch
-import torch.nn.functional as F
+from pathlib import Path
+import time
+from collections import defaultdict
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -20,8 +19,7 @@ from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 
 # === 0. Функции ===
-def write_json_v2(segments, base_path, rel_path, you_id, caller_id, you_cluster):
-    json_path = base_path.with_suffix(".json")
+def write_json(segments, json_path, rel_path, you_id, caller_id):
     json_path.parent.mkdir(parents=True, exist_ok=True)
     
     data = {
@@ -33,7 +31,7 @@ def write_json_v2(segments, base_path, rel_path, you_id, caller_id, you_cluster)
         segment_data = {
             "start": float(seg["start"]),
             "end": float(seg["end"]),
-            "speaker": you_id if seg["cluster"] == you_cluster else caller_id,
+            "speaker": you_id if seg["is_you"] else caller_id,
             "text": seg["text"]
         }
         data["segments"].append(segment_data)
@@ -46,34 +44,27 @@ def format_hhmmss(seconds):
     hrs, mins = divmod(mins, 60)
     return f"{hrs:02}:{mins:02}:{secs:02}"
 
-def l2_normalize(matrix: np.ndarray) -> np.ndarray:
-    """Normalize rows of the matrix to unit L2 norm."""
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1
-    return matrix / norms
-
-def kmeans(matrix: np.ndarray, k: int = 2, n_iter: int = 20, seed: int = 0) -> np.ndarray:
-    """Simple k-means clustering using NumPy."""
-    rng = np.random.default_rng(seed)
-    centroids = matrix[rng.choice(len(matrix), size=k, replace=False)]
-    for _ in range(n_iter):
-        # Исправлено: добавлены недостающие скобки
-        diff = matrix[:, None, :] - centroids[None, :, :]
-        sq_diff = (diff ** 2).sum(axis=2)
-        distances = np.sqrt(sq_diff)
-        labels = distances.argmin(axis=1)
-        new_centroids = np.zeros_like(centroids)
-        for i in range(k):
-            cluster_points = matrix[labels == i]
-            if len(cluster_points) > 0:
-                new_centroids[i] = cluster_points.mean(axis=0)
-        centroids = new_centroids
-    return labels
-
 def extract_phone_number(name: str) -> str | None:
     """Extract the first 11+ digit sequence from a filename."""
     match = re.search(r"(\d{11,})", name)
     return match.group(1) if match else None
+
+def assign_speaker_roles(diarization):
+    """Identify which speaker is 'you' based on speech duration"""
+    speaker_durations = defaultdict(float)
+    
+    for segment in diarization.itertracks(yield_label=True):
+        if isinstance(segment, tuple) and len(segment) == 3:
+            turn, _, speaker = segment
+            duration = turn.end - turn.start
+            speaker_durations[speaker] += duration
+    
+    if not speaker_durations:
+        return {}
+    
+    # The speaker with the longest total duration is "you"
+    you_speaker = max(speaker_durations, key=speaker_durations.get)
+    return {speaker: (speaker == you_speaker) for speaker in speaker_durations}
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -110,7 +101,7 @@ if not HF_TOKEN:
 
 # === 2. Конвертация файлов ===
 print("2. 🎧 Конвертация аудиофайлов...")
-AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac"]
+AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav"]
 SRC = Path(WIN_AUDIO_SRC)
 DST = Path("/root/audio-lora-builder/input/audio_src")
 
@@ -123,20 +114,23 @@ for idx, file in enumerate(files, 1):
     relative = file.relative_to(SRC)
     output = DST / relative.with_suffix(".wav")
     output.parent.mkdir(parents=True, exist_ok=True)
-    print(f"🎛 ({idx}) {file} → {output}")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(file), 
-        "-ar", "16000", "-ac", "1", 
-        "-c:a", "pcm_s16le", str(output)
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Конвертируем только если файл еще не существует или исходный файл новее
+    if not output.exists() or file.stat().st_mtime > output.stat().st_mtime:
+        print(f"🎛 ({idx}) {file} → {output}")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(file), 
+            "-ar", "16000", "-ac", "1", 
+            "-c:a", "pcm_s16le", str(output)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        print(f"⏩ ({idx}) Пропуск (уже сконвертирован): {file}")
 
-print(f"✅ Всего сконвертировано: {len(files)}")
+print(f"✅ Всего аудиофайлов: {len(files)}")
 
 # === 3. Обработка аудио ===
 print("\n3. 🤖 Распознавание и диаризация...")
 OUTPUT_DIR = Path("/root/audio-lora-builder/output")
-if OUTPUT_DIR.exists():
-    shutil.rmtree(OUTPUT_DIR)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 wav_files = list(DST.rglob("*.wav"))
@@ -148,90 +142,116 @@ print("🔍 Обрабатываем файлы...")
 start_all = time.time()
 
 # Инициализация моделей
-model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="int8")
+whisper_model = WhisperModel(
+    "large-v3",
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    compute_type="float16" if torch.cuda.is_available() else "int8"
+)
+
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1",
     use_auth_token=HF_TOKEN
 )
-audio_reader = Audio(sample_rate=16000)
+audio_reader = Audio(sample_rate=16000, mono=True)
 
-all_embeddings = []
-segment_map = {}
-global_you_cluster = None
+processed_files = 0
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
+    output_path = OUTPUT_DIR / rel_path.with_suffix(".json")
+    
+    # Пропускаем уже обработанные файлы
+    if output_path.exists():
+        print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
+        continue
+        
     print(f"\n📝 ({idx}/{len(wav_files)}) {rel_path}")
     
-    # Загрузка аудио
-    waveform, sample_rate = audio_reader(str(audio_path))
-    
-    # Диаризация
-    print("  🎤 Диаризация...")
-    diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
-    
-    # Транскрибация
-    print("  📝 Транскрибация...")
-    segments, _ = model.transcribe(str(audio_path), language="ru", beam_size=5, vad_filter=True)
-    transcriptions = list(segments)
-    
-    # Обработка сегментов
-    seg_data = []
-    for segment in diarization.itertracks(yield_label=True):
-        if isinstance(segment, tuple) and len(segment) == 3:
-            turn, _, speaker = segment
-        else:
+    try:
+        # Загрузка аудио
+        waveform, sample_rate = audio_reader(str(audio_path))
+        
+        # Диаризация
+        print("  🎤 Диаризация...")
+        diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        
+        # Определяем кто есть кто
+        speaker_roles = assign_speaker_roles(diarization)
+        if not speaker_roles:
+            print("  ⚠️ Не удалось определить спикеров")
             continue
             
-        # Пропускаем слишком короткие сегменты
-        if turn.end - turn.start < 0.5:
-            continue
-            
-        # Поиск соответствующего текста
-        segment_text = ""
+        # Транскрибация
+        print("  📝 Транскрибация...")
+        segments, info = whisper_model.transcribe(
+            str(audio_path),
+            language="ru",
+            beam_size=5,
+            vad_filter=True,
+            word_timestamps=False
+        )
+        transcriptions = list(segments)
+        print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
+        
+        # Сопоставляем диаризацию с транскрипцией
+        enriched_segments = []
+        
+        # Собираем все сегменты диаризации
+        diarization_segments = []
+        for segment in diarization.itertracks(yield_label=True):
+            if isinstance(segment, tuple) and len(segment) == 3:
+                turn, _, speaker = segment
+                diarization_segments.append({
+                    "start": turn.start,
+                    "end": turn.end,
+                    "speaker": speaker,
+                    "is_you": speaker_roles.get(speaker, False),
+                    "text_candidates": []
+                })
+        
+        # Сортируем по времени начала
+        diarization_segments.sort(key=lambda x: x["start"])
+        
+        # Сопоставляем текстовые сегменты с диаризацией
         for t in transcriptions:
-            if t.start >= turn.start and t.end <= turn.end:
-                segment_text += t.text.strip() + " "
+            # Ищем подходящий сегмент диаризации
+            for d_seg in diarization_segments:
+                # Проверяем перекрытие не менее 50%
+                overlap_start = max(t.start, d_seg["start"])
+                overlap_end = min(t.end, d_seg["end"])
+                overlap_duration = overlap_end - overlap_start
+                
+                if overlap_duration > 0 and overlap_duration > (t.end - t.start) * 0.5:
+                    d_seg["text_candidates"].append((t.start, t.end, t.text))
+                    break
         
-        seg_data.append({
-            "start": turn.start,
-            "end": turn.end,
-            "text": segment_text.strip(),
-            "speaker": speaker
-        })
-    
-    segment_map[str(rel_path)] = seg_data
-    print(f"  ✅ Сегментов: {len(seg_data)}")
-
-# Кластеризация (упрощенный вариант)
-print("\n🔮 Кластеризация спикеров...")
-# Для реального использования нужна настоящая кластеризация
-# Здесь просто назначаем кластеры для примера
-you_cluster = 0
-
-# Сохранение результатов
-print("\n💾 Сохранение результатов...")
-for rel_path, segments in segment_map.items():
-    enriched = []
-    caller_id = extract_phone_number(str(rel_path)) or "caller"
-    
-    for seg in segments:
-        # Простое назначение кластера
-        cluster = you_cluster if "YOU" in seg["speaker"] else 1
+        # Формируем окончательные сегменты
+        for d_seg in diarization_segments:
+            if d_seg["text_candidates"]:
+                # Объединяем тексты, сортируя по времени начала
+                d_seg["text_candidates"].sort(key=lambda x: x[0])
+                combined_text = " ".join([text for _, _, text in d_seg["text_candidates"]])
+                
+                enriched_segments.append({
+                    "start": d_seg["start"],
+                    "end": d_seg["end"],
+                    "text": combined_text,
+                    "is_you": d_seg["is_you"]
+                })
         
-        enriched.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"],
-            "cluster": cluster
-        })
-    
-    output_path = OUTPUT_DIR / Path(rel_path).with_suffix("")
-    write_json_v2(enriched, output_path, rel_path, "0000000000000", caller_id, you_cluster)
-    print(f"  ✅ {rel_path} -> {output_path}.json")
+        # Сохранение результатов
+        caller_id = extract_phone_number(str(rel_path)) or "caller"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(enriched_segments, output_path, rel_path, "0000000000000", caller_id)
+        print(f"  💾 Сохранено сегментов: {len(enriched_segments)} → {output_path}")
+        processed_files += 1
+        
+    except Exception as e:
+        print(f"  ❌ Ошибка при обработке файла: {e}")
+        continue
 
 total_time = format_hhmmss(time.time() - start_all)
-print(f"\n✅ Обработка завершена. Всего файлов: {len(wav_files)}")
+print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
 print(f"⏱️ Время выполнения: {total_time}")
 
 # === Завершение ===
