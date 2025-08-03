@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 3.2")
+print("\n🔢 Версия скрипта process_audio.py 3.3")
 
 import os
 import shutil
@@ -202,7 +202,7 @@ pipeline = Pipeline.from_pretrained(
     use_auth_token=HF_TOKEN
 )
 
-# Инициализируем модель эмбеддингов с явным указанием устройства
+# Инициализируем модель эмбеддингов
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 embedding_model = Model.from_pretrained("pyannote/embedding").to(device)
 audio_reader = Audio(sample_rate=16000, mono=True)
@@ -214,14 +214,18 @@ if voice_profile is None:
     print("⚠️ Не удалось создать голосовой профиль, будет использоваться только диаризация")
     voice_profile = None
 
+# Инициализация Whisper на CPU
+print("  ⚙️ Инициализация Whisper на CPU...")
+whisper_model = WhisperModel(
+    "large-v3",
+    device="cpu",
+    compute_type="int8"
+)
+
 # === 5. Обработка файлов ===
 print("\n5. 🤖 Распознавание и диаризация...")
 start_all = time.time()
 processed_files = 0
-
-# Инициализация Whisper с учетом возможных проблем CUDA
-whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
-whisper_compute_type = "int8"  # Используем int8 для лучшей совместимости
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
@@ -267,7 +271,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 with torch.no_grad():
                     embedding = embedding_model(segment_tensor).cpu().numpy()[0]
                 
-                # Вычисляем косинусное сходство с исправленной обработкой форм
+                # Вычисляем косинусное сходство
                 similarity = cosine_similarity(embedding, voice_profile)
                 seg["is_you"] = similarity > 0.5
                 
@@ -286,20 +290,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                 for seg in segments:
                     seg["is_you"] = False
         
-        # Транскрибация с защитой от ошибок CUDA
-        print("  📝 Транскрибация...")
+        # Транскрибация на CPU
+        print("  📝 Транскрибация на CPU...")
         try:
-            # Очищаем память CUDA перед запуском Whisper
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            # Инициализируем Whisper непосредственно перед использованием
-            whisper_model = WhisperModel(
-                "large-v3",
-                device=whisper_device,
-                compute_type=whisper_compute_type
-            )
-            
             transcriptions, _ = whisper_model.transcribe(
                 str(audio_path),
                 language="ru",
@@ -308,45 +301,40 @@ for idx, audio_path in enumerate(wav_files, 1):
                 word_timestamps=False
             )
             transcriptions = list(transcriptions)
+            print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         except Exception as e:
             print(f"  ❌ Ошибка транскрибации: {e}")
-            # Пробуем использовать CPU как запасной вариант
-            print("  ⚠️ Пробуем транскрибацию на CPU...")
-            whisper_model = WhisperModel(
-                "large-v3",
-                device="cpu",
-                compute_type="int8"
-            )
-            transcriptions, _ = whisper_model.transcribe(
-                str(audio_path),
-                language="ru",
-                beam_size=5,
-                vad_filter=True,
-                word_timestamps=False
-            )
-            transcriptions = list(transcriptions)
-        finally:
-            # Освобождаем ресурсы Whisper
-            del whisper_model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            transcriptions = []
         
         # Сопоставляем транскрипцию с сегментами
         for seg in segments:
             seg_text = []
+            best_match = ""
+            best_overlap = 0
+            
             for t in transcriptions:
-                # Проверяем перекрытие не менее 50%
+                # Рассчитываем перекрытие
                 overlap_start = max(t.start, seg["start"])
                 overlap_end = min(t.end, seg["end"])
                 overlap_duration = max(0, overlap_end - overlap_start)
                 
-                t_duration = t.end - t.start
+                # Рассчитываем процент перекрытия
                 seg_duration = seg["end"] - seg["start"]
+                if seg_duration > 0:
+                    overlap_percent = overlap_duration / seg_duration
+                else:
+                    overlap_percent = 0
                 
-                if min(t_duration, seg_duration) > 0 and overlap_duration / min(t_duration, seg_duration) > 0.5:
-                    seg_text.append(t.text)
+                # Выбираем лучший вариант
+                if overlap_percent > best_overlap:
+                    best_overlap = overlap_percent
+                    best_match = t.text
             
-            seg["text"] = " ".join(seg_text).strip()
+            # Если найдено хорошее соответствие, используем текст
+            if best_overlap > 0.3:
+                seg["text"] = best_match
+            else:
+                seg["text"] = ""
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
@@ -358,9 +346,6 @@ for idx, audio_path in enumerate(wav_files, 1):
         
     except Exception as e:
         print(f"  ❌ Критическая ошибка при обработке файла: {e}")
-        # Освобождаем память CUDA после ошибки
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         continue
 
 total_time = format_hhmmss(time.time() - start_all)
