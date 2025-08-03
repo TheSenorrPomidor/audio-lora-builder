@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.13")
+print("\n🔢 Версия скрипта process_audio.py 2.14")
 
 import os
 import shutil
@@ -111,7 +111,7 @@ def create_voice_profile(embedding_model, audio_files, min_common_files=3):
     X = l2_normalize(X)
     
     # Определяем оптимальное количество кластеров
-    n_clusters = min(10, max(2, len(all_embeddings) // 20))  # Уменьшено количество кластеров
+    n_clusters = min(10, max(2, len(all_embeddings) // 20))
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(X)
     
@@ -288,11 +288,12 @@ for idx, audio_path in enumerate(wav_files, 1):
                 # Вычисляем косинусное сходство
                 similarity = np.dot(current_emb_norm, profile_norm.T)[0][0]
                 
-                # Динамический порог: чем длиннее сегмент, тем строже проверка
-                duration = seg["end"] - seg["start"]
-                threshold = 0.5 + min(0.3, duration / 10)  # Динамический порог от 0.5 до 0.8
+                # Упрощенный порог для плохого качества звука
+                seg["is_you"] = similarity > 0.5  # Пониженный порог
                 
-                seg["is_you"] = similarity > threshold
+                # Отладочная информация
+                print(f"  🔍 Сегмент {seg['start']:.2f}-{seg['end']:.2f}: "
+                      f"сходство={similarity:.2f}, is_you={seg['is_you']}")
         else:
             # Эвристика по длительности (если не удалось создать профиль)
             total_durations = defaultdict(float)
@@ -305,27 +306,47 @@ for idx, audio_path in enumerate(wav_files, 1):
                 for seg in segments:
                     seg["is_you"] = seg["speaker"] == main_speaker
         
-        # Транскрибация
-        print("  📝 Транскрибация...")
+        # Транскрибация с адаптацией для плохого качества звука
+        print("  📝 Транскрибация (с адаптацией для плохого качества)...")
         transcriptions, _ = whisper_model.transcribe(
             str(audio_path),
             language="ru",
-            beam_size=5,
+            beam_size=10,  # Увеличенный размер луча
             vad_filter=True,
-            word_timestamps=False
+            word_timestamps=False,
+            condition_on_previous_text=False,  # Улучшение для коротких сегментов
+            no_speech_threshold=0.5,  # Более низкий порог для распознавания речи
+            compression_ratio_threshold=2.5  # Более мягкий порог для плохого качества
         )
         transcriptions = list(transcriptions)
+        print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         
-        # Сопоставляем транскрипцию с сегментами
-        # Исправление: используем точное сопоставление вместо перекрытия
+        # Улучшенное сопоставление транскрипции с сегментами
         for seg in segments:
             seg_text = []
-            for t in transcriptions:
-                # Проверяем, что сегмент транскрипции полностью внутри сегмента диаризации
-                if t.start >= seg["start"] and t.end <= seg["end"]:
-                    seg_text.append(t.text)
+            best_overlap = 0
             
-            seg["text"] = " ".join(seg_text).strip()
+            for t in transcriptions:
+                # Рассчитываем перекрытие
+                overlap_start = max(t.start, seg["start"])
+                overlap_end = min(t.end, seg["end"])
+                overlap_duration = max(0, overlap_end - overlap_start)
+                
+                # Рассчитываем процент перекрытия
+                seg_duration = seg["end"] - seg["start"]
+                t_duration = t.end - t.start
+                overlap_percent = overlap_duration / min(seg_duration, t_duration) if min(seg_duration, t_duration) > 0 else 0
+                
+                # Выбираем лучшее соответствие
+                if overlap_percent > best_overlap:
+                    best_overlap = overlap_percent
+                    best_text = t.text
+            
+            # Если найдено хорошее соответствие, используем текст
+            if best_overlap > 0.5:
+                seg["text"] = best_text
+            else:
+                seg["text"] = ""
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
@@ -334,14 +355,12 @@ for idx, audio_path in enumerate(wav_files, 1):
         # Преобразуем в формат для записи
         json_segments = []
         for seg in segments:
-            # Пропускаем пустые сегменты
-            if seg["text"] or (seg["end"] - seg["start"]) > 1.0:
-                json_segments.append({
-                    "start": seg["start"],
-                    "end": seg["end"],
-                    "text": seg["text"],
-                    "is_you": seg["is_you"]
-                })
+            json_segments.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"],
+                "is_you": seg["is_you"]
+            })
         
         write_json(json_segments, output_path, rel_path, "0000000000000", caller_id)
         print(f"  💾 Сохранено сегментов: {len(json_segments)} → {output_path}")
