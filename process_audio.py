@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.10")
+print("\n🔢 Версия скрипта process_audio.py 2.11")
 
 import os
 import shutil
@@ -63,7 +63,9 @@ def get_audio_duration(wav_path):
 
 def l2_normalize(embeddings):
     """Normalize embeddings to unit length"""
-    return embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    return embeddings / norms
 
 def create_voice_profile(embedding_model, audio_files, min_common_files=3):
     """Create voice profile for the most common speaker"""
@@ -88,8 +90,8 @@ def create_voice_profile(embedding_model, audio_files, min_common_files=3):
                     if segment_audio.shape[1] < 16000 * 0.5:  # Минимум 0.5 секунд
                         continue
                     
-                    # Извлекаем эмбеддинг
-                    segment_tensor = torch.tensor(segment_audio).unsqueeze(0).float()
+                    # Конвертируем в тензор (исправление предупреждения)
+                    segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
                     with torch.no_grad():
                         embedding = embedding_model(segment_tensor).numpy()[0]
                     
@@ -107,7 +109,7 @@ def create_voice_profile(embedding_model, audio_files, min_common_files=3):
     X = l2_normalize(X)
     
     # Определяем оптимальное количество кластеров
-    n_clusters = min(100, max(10, len(all_embeddings) // 10))
+    n_clusters = min(100, max(2, len(all_embeddings) // 10))
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(X)
     
@@ -261,7 +263,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                     continue
                     
                 segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-                segment_tensor = torch.tensor(segment_audio).unsqueeze(0).float()
+                
+                # Исправление: корректное создание тензора
+                segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
                 
                 with torch.no_grad():
                     embedding = embedding_model(segment_tensor).numpy()[0]
@@ -276,9 +280,13 @@ for idx, audio_path in enumerate(wav_files, 1):
         # Определение спикеров с использованием голосового профиля
         if isinstance(voice_profile, np.ndarray):
             for seg in segments:
-                # Сравниваем с эталонным голосом
-                similarity = np.dot(l2_normalize(seg["embedding"].reshape(1, -1)), 
-                                   l2_normalize(voice_profile.reshape(1, -1)))[0][0]
+                # Исправление: корректное сравнение эмбеддингов
+                current_emb = seg["embedding"].reshape(1, -1)
+                current_emb_norm = l2_normalize(current_emb)
+                profile_norm = l2_normalize(voice_profile.reshape(1, -1))
+                
+                # Вычисляем косинусное сходство
+                similarity = np.dot(current_emb_norm, profile_norm.T)[0][0]
                 seg["is_you"] = similarity > 0.7  # Порог схожести
         else:
             # Эвристика по длительности (если не удалось создать профиль)
