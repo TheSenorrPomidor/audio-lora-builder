@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.15 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.16 (Stable GPU)")
 
 import os
 import shutil
@@ -194,7 +194,10 @@ for idx, audio_path in enumerate(wav_files, 1):
     print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
     
     try:
+        # Загрузка аудио как массива numpy
         waveform, sample_rate = audio_reader(str(audio_path))
+        
+        # Диаризация
         diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
         
         # Сохраняем данные диаризации
@@ -208,30 +211,51 @@ for idx, audio_path in enumerate(wav_files, 1):
                 file_segments.append((turn.start, turn.end, speaker))
                 
                 # Извлекаем эмбеддинг для сегмента
-                chunk = audio_reader.crop(waveform, seg)
-                embedding = embedding_model({"waveform": chunk, "sample_rate": sample_rate})
-                speaker_embeddings[speaker].append(embedding[0])
+                try:
+                    # Получаем сегмент аудио
+                    chunk = audio_reader.crop(waveform, seg)
+                    
+                    # Правильный формат входных данных для модели эмбеддингов
+                    input_data = {
+                        "waveform": torch.from_numpy(chunk).float(),
+                        "sample_rate": sample_rate
+                    }
+                    
+                    # Извлекаем эмбеддинг
+                    embedding = embedding_model(input_data)
+                    speaker_embeddings[speaker].append(embedding[0])
+                except Exception as e:
+                    print(f"    ⚠️ Ошибка при обработке сегмента: {e}")
+                    continue
         
         diarization_data[audio_path] = file_segments
         
         # Усредняем эмбеддинги по спикерам
         for speaker, embeddings_list in speaker_embeddings.items():
-            avg_embedding = np.mean(embeddings_list, axis=0)
-            avg_embedding = l2_normalize(avg_embedding).flatten()
-            all_embeddings.append(avg_embedding)
-            all_file_names.append(audio_path.name)
-            all_speaker_keys.append(speaker)
+            if embeddings_list:
+                avg_embedding = np.mean(embeddings_list, axis=0)
+                avg_embedding = l2_normalize(avg_embedding).flatten()
+                all_embeddings.append(avg_embedding)
+                all_file_names.append(audio_path.name)
+                all_speaker_keys.append(speaker)
             
     except Exception as e:
         print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}")
 
-# Кластеризация эмбеддингов
+# Проверка наличия эмбеддингов
 if not all_embeddings:
     print("⚠️ Не удалось извлечь эмбеддинги, выход")
     exit(1)
 
+print(f"🔮 Извлечено эмбеддингов: {len(all_embeddings)}")
 print("🔮 Кластеризация спикеров...")
 embeddings_array = np.array(all_embeddings)
+
+# Проверка, что эмбеддингов достаточно для кластеризации
+if len(embeddings_array) < 2:
+    print("⚠️ Недостаточно данных для кластеризации (требуется минимум 2 эмбеддинга)")
+    exit(1)
+
 kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_array)
 labels = kmeans.labels_
 
@@ -245,10 +269,14 @@ cluster1_emb = embeddings_array[cluster1_mask]
 sim0 = average_pairwise_similarity(cluster0_emb)
 sim1 = average_pairwise_similarity(cluster1_emb)
 
+print(f"🔮 Сходство кластера 0: {sim0:.4f}, кластера 1: {sim1:.4f}")
+
 if sim0 > sim1:
     me_cluster = 0
+    print("🔮 Кластер 0 идентифицирован как 'я'")
 else:
     me_cluster = 1
+    print("🔮 Кластер 1 идентифицирован как 'я'")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
