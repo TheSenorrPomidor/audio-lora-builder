@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 3.0")
+print("\n🔢 Версия скрипта process_audio.py 3.1")
 
 import os
 import shutil
@@ -14,8 +14,6 @@ import time
 from collections import defaultdict
 import wave
 import contextlib
-from sklearn.cluster import KMeans
-from tqdm import tqdm
 import random
 
 from faster_whisper import WhisperModel
@@ -72,6 +70,8 @@ def l2_normalize(embeddings):
 
 def cosine_similarity(a, b):
     """Compute cosine similarity between two vectors"""
+    a = a.flatten()
+    b = b.flatten()
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def create_reliable_voice_profile(embedding_model, audio_files, num_samples=5):
@@ -86,7 +86,7 @@ def create_reliable_voice_profile(embedding_model, audio_files, num_samples=5):
     # Выбираем случайные файлы для профиля
     selected_files = random.sample(audio_files, min(len(audio_files), 3))
     
-    for audio_path in tqdm(selected_files, desc="Сбор эталонных эмбеддингов"):
+    for audio_path in selected_files:
         try:
             waveform, sample_rate = audio_reader(str(audio_path))
             diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
@@ -269,8 +269,8 @@ for idx, audio_path in enumerate(wav_files, 1):
                 with torch.no_grad():
                     embedding = embedding_model(segment_tensor).cpu().numpy()[0]
                 
-                # Вычисляем косинусное сходство
-                similarity = cosine_similarity(l2_normalize(embedding), l2_normalize(voice_profile))
+                # Вычисляем косинусное сходство с исправленной обработкой форм
+                similarity = cosine_similarity(embedding, voice_profile)
                 seg["is_you"] = similarity > 0.5
                 
                 print(f"    Сегмент {seg['start']:.2f}-{seg['end']:.2f}: "
@@ -311,7 +311,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 t_duration = t.end - t.start
                 seg_duration = seg["end"] - seg["start"]
                 
-                if overlap_duration / min(t_duration, seg_duration) > 0.5:
+                if min(t_duration, seg_duration) > 0 and overlap_duration / min(t_duration, seg_duration) > 0.5:
                     seg_text.append(t.text)
             
             seg["text"] = " ".join(seg_text).strip()
