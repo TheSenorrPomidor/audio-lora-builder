@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.11")
+print("\n🔢 Версия скрипта process_audio.py 2.13")
 
 import os
 import shutil
@@ -63,6 +63,8 @@ def get_audio_duration(wav_path):
 
 def l2_normalize(embeddings):
     """Normalize embeddings to unit length"""
+    if embeddings.ndim == 1:
+        embeddings = embeddings.reshape(1, -1)
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1
     return embeddings / norms
@@ -90,7 +92,7 @@ def create_voice_profile(embedding_model, audio_files, min_common_files=3):
                     if segment_audio.shape[1] < 16000 * 0.5:  # Минимум 0.5 секунд
                         continue
                     
-                    # Конвертируем в тензор (исправление предупреждения)
+                    # Конвертируем в тензор
                     segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
                     with torch.no_grad():
                         embedding = embedding_model(segment_tensor).numpy()[0]
@@ -109,7 +111,7 @@ def create_voice_profile(embedding_model, audio_files, min_common_files=3):
     X = l2_normalize(X)
     
     # Определяем оптимальное количество кластеров
-    n_clusters = min(100, max(2, len(all_embeddings) // 10))
+    n_clusters = min(10, max(2, len(all_embeddings) // 20))  # Уменьшено количество кластеров
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(X)
     
@@ -263,8 +265,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                     continue
                     
                 segment_audio = waveform[:, int(turn.start * sample_rate):int(turn.end * sample_rate)]
-                
-                # Исправление: корректное создание тензора
                 segment_tensor = torch.as_tensor(segment_audio).unsqueeze(0).float()
                 
                 with torch.no_grad():
@@ -280,14 +280,19 @@ for idx, audio_path in enumerate(wav_files, 1):
         # Определение спикеров с использованием голосового профиля
         if isinstance(voice_profile, np.ndarray):
             for seg in segments:
-                # Исправление: корректное сравнение эмбеддингов
+                # Улучшенное сравнение эмбеддингов
                 current_emb = seg["embedding"].reshape(1, -1)
                 current_emb_norm = l2_normalize(current_emb)
                 profile_norm = l2_normalize(voice_profile.reshape(1, -1))
                 
                 # Вычисляем косинусное сходство
                 similarity = np.dot(current_emb_norm, profile_norm.T)[0][0]
-                seg["is_you"] = similarity > 0.7  # Порог схожести
+                
+                # Динамический порог: чем длиннее сегмент, тем строже проверка
+                duration = seg["end"] - seg["start"]
+                threshold = 0.5 + min(0.3, duration / 10)  # Динамический порог от 0.5 до 0.8
+                
+                seg["is_you"] = similarity > threshold
         else:
             # Эвристика по длительности (если не удалось создать профиль)
             total_durations = defaultdict(float)
@@ -312,15 +317,12 @@ for idx, audio_path in enumerate(wav_files, 1):
         transcriptions = list(transcriptions)
         
         # Сопоставляем транскрипцию с сегментами
+        # Исправление: используем точное сопоставление вместо перекрытия
         for seg in segments:
             seg_text = []
             for t in transcriptions:
-                # Проверяем перекрытие с сегментом диаризации
-                overlap_start = max(t.start, seg["start"])
-                overlap_end = min(t.end, seg["end"])
-                overlap_duration = max(0, overlap_end - overlap_start)
-                
-                if overlap_duration > 0:
+                # Проверяем, что сегмент транскрипции полностью внутри сегмента диаризации
+                if t.start >= seg["start"] and t.end <= seg["end"]:
                     seg_text.append(t.text)
             
             seg["text"] = " ".join(seg_text).strip()
@@ -332,12 +334,14 @@ for idx, audio_path in enumerate(wav_files, 1):
         # Преобразуем в формат для записи
         json_segments = []
         for seg in segments:
-            json_segments.append({
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"],
-                "is_you": seg["is_you"]
-            })
+            # Пропускаем пустые сегменты
+            if seg["text"] or (seg["end"] - seg["start"]) > 1.0:
+                json_segments.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"],
+                    "is_you": seg["is_you"]
+                })
         
         write_json(json_segments, output_path, rel_path, "0000000000000", caller_id)
         print(f"  💾 Сохранено сегментов: {len(json_segments)} → {output_path}")
