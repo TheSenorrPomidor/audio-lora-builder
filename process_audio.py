@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.16 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.17 (Stable GPU)")
 
 import os
 import shutil
@@ -210,6 +210,10 @@ for idx, audio_path in enumerate(wav_files, 1):
                 seg = Segment(turn.start, turn.end)
                 file_segments.append((turn.start, turn.end, speaker))
                 
+                # Пропускаем слишком короткие сегменты
+                if seg.duration < 0.1:  # 100 ms
+                    continue
+                
                 # Извлекаем эмбеддинг для сегмента
                 try:
                     # Получаем сегмент аудио
@@ -217,13 +221,15 @@ for idx, audio_path in enumerate(wav_files, 1):
                     
                     # Правильный формат входных данных для модели эмбеддингов
                     input_data = {
-                        "waveform": torch.from_numpy(chunk).float(),
-                        "sample_rate": sample_rate
+                        "audio": {
+                            "waveform": torch.from_numpy(chunk).float(),
+                            "sample_rate": sample_rate
+                        }
                     }
                     
                     # Извлекаем эмбеддинг
                     embedding = embedding_model(input_data)
-                    speaker_embeddings[speaker].append(embedding[0])
+                    speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}")
                     continue
