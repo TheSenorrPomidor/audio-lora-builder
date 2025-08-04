@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.43 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.44 (Stable GPU)")
 
 import os
 import shutil
@@ -15,6 +15,7 @@ from collections import defaultdict
 import wave
 import contextlib
 import traceback
+from sklearn.cluster import KMeans  # Исправленный импорт
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -182,6 +183,7 @@ all_embeddings = []
 all_file_names = []
 all_speaker_keys = []
 diarization_data = {}
+embedding_dim = None  # Для проверки размерности
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
@@ -194,6 +196,9 @@ for idx, audio_path in enumerate(wav_files, 1):
     print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
     
     try:
+        # Получаем длительность файла для проверки границ
+        file_duration = get_audio_duration(audio_path)
+        
         # Диаризация
         diarization = pipeline(str(audio_path), num_speakers=2)
         
@@ -205,11 +210,18 @@ for idx, audio_path in enumerate(wav_files, 1):
             if isinstance(segment, tuple) and len(segment) == 3:
                 turn, _, speaker = segment
                 seg = Segment(turn.start, turn.end)
-                file_segments.append((turn.start, turn.end, speaker))
                 
-                # Пропускаем слишком короткие сегменты
-                if seg.duration < 0.1:  # 100 ms
+                # Корректируем границы сегмента
+                seg = Segment(
+                    max(0, min(seg.start, file_duration - 0.01)),
+                    min(file_duration, max(seg.end, 0.01))
+                )
+                
+                # Пропускаем слишком короткие или некорректные сегменты
+                if seg.duration < 0.1 or seg.end <= seg.start:  # 100 ms
                     continue
+                
+                file_segments.append((seg.start, seg.end, speaker))
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
@@ -235,7 +247,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                         if max_val > 0:
                             waveform = waveform / max_val
                     except Exception as e:
-                        tb = traceback.extract_tb(e.__traceback__)[-1]
+                        tb = traceback.extract_tb(e.__traceback__)[0]
                         print(f"    ⚠️ Ошибка нормализации: {e}, файл {__file__}, строка {tb.lineno}")
                         continue
                     
@@ -252,10 +264,18 @@ for idx, audio_path in enumerate(wav_files, 1):
                         "sample_rate": sample_rate
                     })
                     
+                    # Проверяем размерность эмбеддингов
+                    if embedding_dim is None:
+                        embedding_dim = embedding.shape[0]
+                    
+                    if embedding.shape[0] != embedding_dim:
+                        print(f"    ⚠️ Неправильная размерность эмбеддинга: {embedding.shape} (ожидалось {embedding_dim}), пропускаем")
+                        continue
+                    
                     speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
                     # Улучшенная обработка ошибок с указанием номера строки
-                    tb = traceback.extract_tb(e.__traceback__)[-1]
+                    tb = traceback.extract_tb(e.__traceback__)[0]
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}, файл {__file__}, строка {tb.lineno}")
                     continue
         
@@ -264,6 +284,12 @@ for idx, audio_path in enumerate(wav_files, 1):
         # Усредняем эмбеддинги по спикерам
         for speaker, embeddings_list in speaker_embeddings.items():
             if embeddings_list:
+                # Проверяем одинаковую размерность всех эмбеддингов
+                dims = [e.shape[0] for e in embeddings_list]
+                if len(set(dims)) > 1:
+                    print(f"    ⚠️ Разные размерности эмбеддингов для спикера {speaker}: {dims}")
+                    continue
+                
                 avg_embedding = np.mean(embeddings_list, axis=0)
                 avg_embedding = l2_normalize(avg_embedding).flatten()
                 all_embeddings.append(avg_embedding)
@@ -272,7 +298,7 @@ for idx, audio_path in enumerate(wav_files, 1):
             
     except Exception as e:
         # Улучшенная обработка ошибок с указанием номера строки
-        tb = traceback.extract_tb(e.__traceback__)[-1]
+        tb = traceback.extract_tb(e.__traceback__)[0]
         print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}")
 
 # Проверка наличия эмбеддингов
@@ -281,6 +307,22 @@ if not all_embeddings:
     exit(1)
 
 print(f"🔮 Извлечено эмбеддингов: {len(all_embeddings)}")
+
+# Проверяем размерность всех эмбеддингов
+emb_dims = [e.shape[0] for e in all_embeddings] if all_embeddings[0].ndim == 1 else [e.size for e in all_embeddings]
+if len(set(emb_dims)) > 1:
+    print(f"⚠️ Обнаружены эмбеддинги разной размерности: {set(emb_dims)}")
+    # Оставляем только эмбеддинги с наиболее частой размерностью
+    dim_counts = {dim: emb_dims.count(dim) for dim in set(emb_dims)}
+    common_dim = max(dim_counts, key=dim_counts.get)
+    filtered_embeddings = [e for e in all_embeddings if (e.shape[0] if e.ndim == 1 else e.size) == common_dim]
+    print(f"🔮 Оставляем {len(filtered_embeddings)}/{len(all_embeddings)} эмбеддингов размерностью {common_dim}")
+    all_embeddings = filtered_embeddings
+
+if len(all_embeddings) < 2:
+    print("⚠️ Недостаточно эмбеддингов для кластеризации (требуется минимум 2)")
+    exit(1)
+
 print("🔮 Кластеризация спикеров...")
 embeddings_array = np.array(all_embeddings)
 
@@ -404,7 +446,7 @@ for idx, audio_path in enumerate(wav_files, 1):
         
     except Exception as e:
         # Улучшенная обработка ошибок с указанием номера строки
-        tb = traceback.extract_tb(e.__traceback__)[-1]
+        tb = traceback.extract_tb(e.__traceback__)[0]
         print(f"  ❌ Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}")
 
 total_time = format_hhmmss(time.time() - start_all)
