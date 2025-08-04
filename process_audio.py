@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.41 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.42 (Stable GPU)")
 
 import os
 import shutil
@@ -14,7 +14,7 @@ import time
 from collections import defaultdict
 import wave
 import contextlib
-import traceback  # Добавлен импорт для трассировки ошибок
+import traceback
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -99,7 +99,7 @@ if os.path.exists(ENV_FILE):
 
 if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
     print("⚠️ Не удалось найти корректный путь до папки с аудиофайлами.")
-    user_input = input("Введите путь до папки с аудиофайлами [/mnt/c/]: ").strip()
+    user_input = input("Введите пути до папки с аудиофайлами [/mnt/c/]: ").strip()
     WIN_AUDIO_SRC = user_input or "/mnt/c/"
     WIN_AUDIO_SRC = WIN_AUDIO_SRC.replace("\\", "/")
     
@@ -219,15 +219,21 @@ for idx, audio_path in enumerate(wav_files, 1):
                         seg                # Объект Segment
                     )
                     
-                    # Проверка на пустой сегмент
+                    # Проверка на пустой сегмент - ПЕРЕМЕЩЕНО ВЫШЕ
                     if waveform.size == 0:
                         print(f"    ⚠️ Пустой сегмент ({seg.duration:.2f}s), пропускаем")
                         continue
                     
-                    # Нормализуем аудио (исправленная версия)
-                    max_val = np.max(np.abs(waveform))
-                    if max_val > 0:
-                        waveform = waveform / max_val
+                    # Обработка нормализации с try-except
+                    try:
+                        # Нормализуем аудио
+                        max_val = np.max(np.abs(waveform))
+                        if max_val > 0:
+                            waveform = waveform / max_val
+                    except Exception as e:
+                        tb = traceback.extract_tb(e.__traceback__)[-1]
+                        print(f"    ⚠️ Ошибка нормализации: {e}, файл {__file__}, строка {tb.lineno}")
+                        continue
                     
                     # Преобразуем в torch.Tensor
                     tensor = torch.from_numpy(waveform).float()
