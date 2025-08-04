@@ -14,7 +14,7 @@ import time
 from collections import defaultdict
 import wave
 import contextlib
-from sklearn.cluster import KMeans
+import traceback  # Добавлен импорт для трассировки ошибок
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -219,10 +219,15 @@ for idx, audio_path in enumerate(wav_files, 1):
                         seg                # Объект Segment
                     )
                     
-                    # Нормализуем аудио
+                    # Проверка на пустой сегмент
+                    if waveform.size == 0:
+                        print(f"    ⚠️ Пустой сегмент ({seg.duration:.2f}s), пропускаем")
+                        continue
+                    
+                    # Нормализуем аудио (исправленная версия)
                     max_val = np.max(np.abs(waveform))
                     if max_val > 0:
-                        waveform /= max_val
+                        waveform = waveform / max_val
                     
                     # Преобразуем в torch.Tensor
                     tensor = torch.from_numpy(waveform).float()
@@ -239,7 +244,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                     
                     speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
-                    print(f"    ⚠️ Ошибка при обработке сегмента: {e}")
+                    # Улучшенная обработка ошибок с указанием номера строки
+                    tb = traceback.extract_tb(e.__traceback__)[-1]
+                    print(f"    ⚠️ Ошибка при обработке сегмента: {e}, файл {__file__}, строка {tb.lineno}")
                     continue
         
         diarization_data[audio_path] = file_segments
@@ -254,7 +261,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                 all_speaker_keys.append(speaker)
             
     except Exception as e:
-        print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}")
+        # Улучшенная обработка ошибок с указанием номера строки
+        tb = traceback.extract_tb(e.__traceback__)[-1]
+        print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}")
 
 # Проверка наличия эмбеддингов
 if not all_embeddings:
@@ -384,7 +393,9 @@ for idx, audio_path in enumerate(wav_files, 1):
         processed_files += 1
         
     except Exception as e:
-        print(f"  ❌ Ошибка при обработке файла: {e}")
+        # Улучшенная обработка ошибок с указанием номера строки
+        tb = traceback.extract_tb(e.__traceback__)[-1]
+        print(f"  ❌ Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}")
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
