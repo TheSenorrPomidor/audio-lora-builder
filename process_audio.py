@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.42 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.43 (Stable GPU)")
 
 import os
 import shutil
@@ -219,12 +219,16 @@ for idx, audio_path in enumerate(wav_files, 1):
                         seg                # Объект Segment
                     )
                     
-                    # Проверка на пустой сегмент - ПЕРЕМЕЩЕНО ВЫШЕ
+                    # Явное преобразование в numpy-массив
+                    if isinstance(waveform, torch.Tensor):
+                        waveform = waveform.numpy()
+                    
+                    # Проверка на пустой сегмент
                     if waveform.size == 0:
                         print(f"    ⚠️ Пустой сегмент ({seg.duration:.2f}s), пропускаем")
                         continue
                     
-                    # Обработка нормализации с try-except
+                    # Обработка нормализации
                     try:
                         # Нормализуем аудио
                         max_val = np.max(np.abs(waveform))
