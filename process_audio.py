@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.44 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.45 (Stable GPU)")
 
 import os
 import shutil
@@ -15,13 +15,14 @@ from collections import defaultdict
 import wave
 import contextlib
 import traceback
-from sklearn.cluster import KMeans  # Исправленный импорт
+from sklearn.cluster import KMeans
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 from pyannote.audio import Inference
+from pyannote.core import SlidingWindowFeature  # Добавлен импорт для обработки типа
 
 # === 0. Функции ===
 def write_json(segments, json_path, rel_path, you_id, caller_id):
@@ -259,10 +260,21 @@ for idx, audio_path in enumerate(wav_files, 1):
                         tensor = tensor.unsqueeze(0)  # (1, time)
                     
                     # Извлекаем эмбеддинг
-                    embedding = embedding_model({
+                    embedding_result = embedding_model({
                         "waveform": tensor, 
                         "sample_rate": sample_rate
                     })
+                    
+                    # Обработка разных типов возвращаемых значений
+                    if isinstance(embedding_result, SlidingWindowFeature):
+                        embedding = embedding_result.data.squeeze()
+                    elif isinstance(embedding_result, torch.Tensor):
+                        embedding = embedding_result.cpu().numpy().squeeze()
+                    elif isinstance(embedding_result, np.ndarray):
+                        embedding = embedding_result.squeeze()
+                    else:
+                        print(f"    ⚠️ Неизвестный тип эмбеддинга: {type(embedding_result)}")
+                        continue
                     
                     # Проверяем размерность эмбеддингов
                     if embedding_dim is None:
