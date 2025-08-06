@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.45 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.46 (Stable GPU)")
 
 import os
 import shutil
@@ -16,13 +16,15 @@ import wave
 import contextlib
 import traceback
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA  # Для уменьшения размерности
+from scipy.spatial.distance import cosine  # Для сравнения эмбеддингов
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 from pyannote.audio import Inference
-from pyannote.core import SlidingWindowFeature  # Добавлен импорт для обработки типа
+from pyannote.core import SlidingWindowFeature
 
 # === 0. Функции ===
 def write_json(segments, json_path, rel_path, you_id, caller_id):
@@ -80,10 +82,37 @@ def average_pairwise_similarity(embeddings):
     count = 0
     for i in range(n):
         for j in range(i+1, n):
-            total += np.dot(embeddings[i], embeddings[j])
+            # Используем косинусное сходство (1 - расстояние)
+            similarity = 1 - cosine(embeddings[i], embeddings[j])
+            total += similarity
             count += 1
             
     return total / count if count > 0 else 0.0
+
+def merge_short_segments(segments, min_duration=0.3, max_gap=0.5):
+    """Объединяет короткие сегменты с учетом пауз"""
+    if not segments:
+        return []
+    
+    merged = []
+    current = segments[0].copy()
+    
+    for seg in segments[1:]:
+        gap = seg["start"] - current["end"]
+        
+        # Если промежуток маленький и сегмент короткий - объединяем
+        if gap < max_gap and (current["end"] - current["start"] < min_duration or 
+                             seg["end"] - seg["start"] < min_duration):
+            current["end"] = seg["end"]
+            current["text"] = (current.get("text", "") + " " + seg.get("text", "")).strip()
+            if "text_candidates" in current:
+                current["text_candidates"].extend(seg.get("text_candidates", []))
+        else:
+            merged.append(current)
+            current = seg.copy()
+    
+    merged.append(current)
+    return merged
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -186,6 +215,9 @@ all_speaker_keys = []
 diarization_data = {}
 embedding_dim = None  # Для проверки размерности
 
+# Словарь для хранения длительности речи по спикерам
+speaker_durations = defaultdict(float)
+
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
     output_path = OUTPUT_DIR / rel_path.with_suffix(".json")
@@ -223,6 +255,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                     continue
                 
                 file_segments.append((seg.start, seg.end, speaker))
+                speaker_durations[speaker] += seg.duration
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
@@ -275,6 +308,10 @@ for idx, audio_path in enumerate(wav_files, 1):
                     else:
                         print(f"    ⚠️ Неизвестный тип эмбеддинга: {type(embedding_result)}")
                         continue
+                    
+                    # Если эмбеддинг многомерный - усредняем
+                    if embedding.ndim > 1:
+                        embedding = np.mean(embedding, axis=0)
                     
                     # Проверяем размерность эмбеддингов
                     if embedding_dim is None:
@@ -338,15 +375,15 @@ if len(all_embeddings) < 2:
 print("🔮 Кластеризация спикеров...")
 embeddings_array = np.array(all_embeddings)
 
-# Проверка, что эмбеддингов достаточно для кластеризации
-if len(embeddings_array) < 2:
-    print("⚠️ Недостаточно данных для кластеризации (требуется минимум 2 эмбеддинга)")
-    exit(1)
+# Уменьшаем размерность с помощью PCA
+pca = PCA(n_components=min(50, len(embeddings_array)-1))
+embeddings_reduced = pca.fit_transform(embeddings_array)
 
-kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_array)
+# Кластеризация
+kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
 labels = kmeans.labels_
 
-# Определяем кластер для "я" по внутрикластерному сходству
+# Определяем кластер для "я" по внутрикластерному сходству и количеству сегментов
 cluster0_mask = (labels == 0)
 cluster1_mask = (labels == 1)
 
@@ -356,14 +393,23 @@ cluster1_emb = embeddings_array[cluster1_mask]
 sim0 = average_pairwise_similarity(cluster0_emb)
 sim1 = average_pairwise_similarity(cluster1_emb)
 
-print(f"🔮 Сходство кластера 0: {sim0:.4f}, кластера 1: {sim1:.4f}")
+# Определение по продолжительности речи (предполагаем, что вы говорите больше)
+duration0 = sum(duration for i, duration in enumerate(speaker_durations.values()) if labels[i] == 0)
+duration1 = sum(duration for i, duration in enumerate(speaker_durations.values()) if labels[i] == 1)
 
-if sim0 > sim1:
-    me_cluster = 0
-    print("🔮 Кластер 0 идентифицирован как 'я'")
+print(f"🔮 Сходство кластера 0: {sim0:.4f}, кластера 1: {sim1:.4f}")
+print(f"🔮 Продолжительность речи: кластер 0: {duration0:.2f}s, кластер 1: {duration1:.2f}s")
+
+# Комбинированное решение: сходство + продолжительность
+if abs(sim0 - sim1) < 0.1:  # Малая разница в сходстве
+    me_cluster = 0 if duration0 > duration1 else 1
+    print(f"🔮 Малая разница в сходстве. Выбран кластер {me_cluster} по продолжительности речи")
 else:
-    me_cluster = 1
-    print("🔮 Кластер 1 идентифицирован как 'я'")
+    if sim0 > sim1:
+        me_cluster = 0
+    else:
+        me_cluster = 1
+    print(f"🔮 Кластер {me_cluster} идентифицирован как 'я' по сходству")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
@@ -407,6 +453,9 @@ for idx, audio_path in enumerate(wav_files, 1):
                 "text_candidates": []
             })
         
+        # Объединяем короткие сегменты
+        diarization_segments = merge_short_segments(diarization_segments)
+        
         # Транскрибация
         segments, info = whisper_model.transcribe(
             str(audio_path),
@@ -448,6 +497,18 @@ for idx, audio_path in enumerate(wav_files, 1):
                     "text": combined_text.strip(),
                     "is_you": d_seg["is_you"]
                 })
+        
+        # Дополнительная проверка для файлов с одним спикером
+        if len(set(seg["is_you"] for seg in enriched_segments)) == 1:
+            print("  ⚠️ В файле обнаружен только один спикер!")
+            # Попробуем определить по продолжительности речи
+            your_duration = sum(seg["end"] - seg["start"] for seg in enriched_segments if seg["is_you"])
+            other_duration = sum(seg["end"] - seg["start"] for seg in enriched_segments if not seg["is_you"])
+            
+            if your_duration == 0 or other_duration > your_duration * 1.5:
+                print("  🔄 Корректируем роли спикеров (основной спикер - не вы)")
+                for seg in enriched_segments:
+                    seg["is_you"] = not seg["is_you"]
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
