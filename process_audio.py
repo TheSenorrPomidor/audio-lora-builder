@@ -1,6 +1,38 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.49 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.50 (Stable GPU Enhanced)")
+
+"""
+Требуемые зависимости:
+
+=== Системные пакеты (deb) ===
+python3-pip
+ffmpeg
+dpkg-dev
+unzip
+
+=== CUDA/cuDNN (deb) ===
+libcudnn9-cuda-12 
+libcudnn9-dev-cuda-12
+libcublas-12-6 
+libcublas-dev-12-6 
+cuda-toolkit-12-config-common 
+cuda-toolkit-12-6-config-common 
+cuda-toolkit-config-common
+
+=== Python-пакеты (WHL) ===
+faster-whisper==1.1.0
+pyannote-audio==3.3.2
+transformers==4.28.1
+librosa==0.10.0
+hydra-core==1.3.2
+faiss-gpu==1.7.2
+scikit-learn==1.7.1
+soundfile==0.13.1
+torch==2.2.2
+numpy==1.26.4
+scipy==1.13.0
+"""
 
 import os
 import shutil
@@ -18,6 +50,7 @@ import traceback
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cosine
+import pickle
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -89,7 +122,7 @@ def average_pairwise_similarity(embeddings):
             
     return total / count if count > 0 else 0.0
 
-def merge_short_segments(segments, min_duration=0.3, max_gap=0.5):
+def merge_short_segments(segments, min_duration=0.3, max_gap=0.3):
     """Объединяет короткие сегменты с учетом пауз"""
     if not segments:
         return []
@@ -99,20 +132,36 @@ def merge_short_segments(segments, min_duration=0.3, max_gap=0.5):
     
     for seg in segments[1:]:
         gap = seg["start"] - current["end"]
+        same_speaker = current["is_you"] == seg["is_you"]
         
-        # Если промежуток маленький и сегмент короткий - объединяем
-        if gap < max_gap and (current["end"] - current["start"] < min_duration or 
+        # Если промежуток маленький, сегмент короткий и спикер тот же - объединяем
+        if same_speaker and gap < max_gap and (current["end"] - current["start"] < min_duration or 
                              seg["end"] - seg["start"] < min_duration):
             current["end"] = seg["end"]
             current["text"] = (current.get("text", "") + " " + seg.get("text", "")).strip()
-            if "text_candidates" in current:
-                current["text_candidates"].extend(seg.get("text_candidates", []))
         else:
             merged.append(current)
             current = seg.copy()
     
     merged.append(current)
     return merged
+
+# === Глобальный словарь известных собеседников ===
+KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
+known_caller_ids = {}  # caller_id -> embedding
+
+# Загрузка известных собеседников
+if KNOWN_CALLERS_FILE.exists():
+    try:
+        with open(KNOWN_CALLERS_FILE, "rb") as f:
+            known_caller_ids = pickle.load(f)
+        print(f"🔊 Загружено {len(known_caller_ids)} известных собеседников")
+    except:
+        print("⚠️ Не удалось загрузить известных собеседников")
+
+def save_known_callers():
+    with open(KNOWN_CALLERS_FILE, "wb") as f:
+        pickle.dump(known_caller_ids, f)
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -147,7 +196,7 @@ if not HF_TOKEN:
     with open(ENV_FILE, "a", encoding="utf-8") as f:
         f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
-# === 2. Конвертация файлов ===
+# === 2. Конвертация файлов (с нормализацией громкости) ===
 print("2. 🎧 Конвертация аудиофайлов...")
 AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav"]
 SRC = Path(WIN_AUDIO_SRC)
@@ -167,6 +216,7 @@ for idx, file in enumerate(files, 1):
         print(f"🎛 ({idx}) {file} → {output}")
         subprocess.run([
             "ffmpeg", "-y", "-i", str(file), 
+            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",  # Нормализация громкости
             "-ar", "16000", "-ac", "1", 
             "-c:a", "pcm_s16le", str(output)
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -264,8 +314,8 @@ for idx, audio_path in enumerate(wav_files, 1):
                     min(file_duration, max(seg.end, 0.01))
                 )
                 
-                # Пропускаем слишком короткие или некорректные сегменты
-                if seg.duration < 0.5 or seg.end <= seg.start:  # Увеличено до 500 мс
+                # Пропускаем слишком короткие или некорректные сегменты (уменьшено до 200 мс)
+                if seg.duration < 0.2 or seg.end <= seg.start:
                     continue
                 
                 file_segments.append((seg.start, seg.end, speaker))
@@ -273,7 +323,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
-                    # ПРАВИЛЬНЫЙ ВЫЗОВ: crop(file, segment)
                     waveform, sample_rate = audio_reader.crop(
                         str(audio_path),  # Путь к файлу
                         seg                # Объект Segment
@@ -337,7 +386,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                     
                     speaker_embeddings[speaker].append(embedding)
                 except Exception as e:
-                    # Улучшенная обработка ошибок с указанием номера строки
                     tb = traceback.extract_tb(e.__traceback__)[0]
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}, файл {__file__}, строка {tb.lineno}")
                     continue
@@ -361,7 +409,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                 all_speaker_keys.append(speaker)
             
     except Exception as e:
-        # Улучшенная обработка ошибок с указанием номера строки
         tb = traceback.extract_tb(e.__traceback__)[0]
         print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}")
 
@@ -376,7 +423,6 @@ print(f"🔮 Извлечено эмбеддингов: {len(all_embeddings)}")
 emb_dims = [e.shape[0] for e in all_embeddings] if all_embeddings[0].ndim == 1 else [e.size for e in all_embeddings]
 if len(set(emb_dims)) > 1:
     print(f"⚠️ Обнаружены эмбеддинги разной размерности: {set(emb_dims)}")
-    # Оставляем только эмбеддинги с наиболее частой размерностью
     dim_counts = {dim: emb_dims.count(dim) for dim in set(emb_dims)}
     common_dim = max(dim_counts, key=dim_counts.get)
     filtered_embeddings = [e for e in all_embeddings if (e.shape[0] if e.ndim == 1 else e.size) == common_dim]
@@ -398,37 +444,56 @@ embeddings_reduced = pca.fit_transform(embeddings_array)
 kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
 labels = kmeans.labels_
 
-# === Улучшенная стратегия определения "я" ===
-# 1. Создаем словарь для отслеживания кластеров по файлам
-file_clusters = defaultdict(set)
-
-# 2. Собираем информацию о том, какие кластеры встречаются в каждом файле
-for i in range(len(all_embeddings)):
-    file_name = all_file_names[i]
-    cluster_id = labels[i]
-    file_clusters[file_name].add(cluster_id)
-
-# 3. Считаем "вес" кластеров: файлы с несколькими спикерами имеют больший вес
-cluster_weights = defaultdict(float)
-
-for file_name, clusters in file_clusters.items():
-    weight = 1.0
-    # Файлы с двумя спикерами получают больший вес
-    if len(clusters) > 1:
-        weight = 2.0
+# === Улучшенное определение "я" с учетом известных собеседников ===
+if known_caller_ids:
+    # Проверяем сходство кластеров с известными собеседниками
+    cluster_similarity = {0: 0.0, 1: 0.0}
+    cluster_counts = {0: 0, 1: 0}
     
-    for cluster_id in clusters:
-        cluster_weights[cluster_id] += weight
-
-print(f"🔮 Вес кластеров: Кластер 0: {cluster_weights[0]:.1f}, Кластер 1: {cluster_weights[1]:.1f}")
-
-# 4. Определяем кластер "я" как тот, что имеет наибольший вес
-if cluster_weights[0] > cluster_weights[1]:
-    me_cluster = 0
-    print(f"🔮 Кластер 0 идентифицирован как 'я' (вес: {cluster_weights[0]:.1f})")
+    for i, embedding in enumerate(all_embeddings):
+        cluster = labels[i]
+        for known_embed in known_caller_ids.values():
+            similarity = 1 - cosine(embedding, known_embed)
+            cluster_similarity[cluster] += similarity
+            cluster_counts[cluster] += 1
+    
+    # Нормализуем сходство
+    for cluster in [0, 1]:
+        if cluster_counts[cluster] > 0:
+            cluster_similarity[cluster] /= cluster_counts[cluster]
+    
+    print(f"🔮 Сходство кластеров с известными собеседниками: Кластер 0: {cluster_similarity[0]:.4f}, Кластер 1: {cluster_similarity[1]:.4f}")
+    
+    # Кластер с наименьшим сходством - вероятнее всего "я"
+    if cluster_similarity[0] < cluster_similarity[1]:
+        me_cluster = 0
+        print(f"🔮 Кластер 0 идентифицирован как 'я' (сходство: {cluster_similarity[0]:.4f})")
+    else:
+        me_cluster = 1
+        print(f"🔮 Кластер 1 идентифицирован как 'я' (сходство: {cluster_similarity[1]:.4f})")
 else:
-    me_cluster = 1
-    print(f"🔮 Кластер 1 идентифицирован как 'я' (вес: {cluster_weights[1]:.1f})")
+    # Стандартная логика (если нет известных собеседников)
+    file_clusters = defaultdict(set)
+    for i in range(len(all_embeddings)):
+        file_name = all_file_names[i]
+        cluster_id = labels[i]
+        file_clusters[file_name].add(cluster_id)
+
+    cluster_weights = defaultdict(float)
+    for file_name, clusters in file_clusters.items():
+        weight = 1.0
+        if len(clusters) > 1:
+            weight = 2.0
+        for cluster_id in clusters:
+            cluster_weights[cluster_id] += weight
+
+    print(f"🔮 Вес кластеров: Кластер 0: {cluster_weights[0]:.1f}, Кластер 1: {cluster_weights[1]:.1f}")
+    if cluster_weights[0] > cluster_weights[1]:
+        me_cluster = 0
+        print(f"🔮 Кластер 0 идентифицирован как 'я' (вес: {cluster_weights[0]:.1f})")
+    else:
+        me_cluster = 1
+        print(f"🔮 Кластер 1 идентифицирован как 'я' (вес: {cluster_weights[1]:.1f})")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
@@ -450,7 +515,6 @@ for idx, audio_path in enumerate(wav_files, 1):
         print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
         continue
         
-    # Пропускаем файлы без данных диаризации
     if audio_path not in diarization_data:
         print(f"  ⚠️ ({idx}/{len(wav_files)}) Пропуск (нет данных диаризации): {rel_path}")
         continue
@@ -459,6 +523,7 @@ for idx, audio_path in enumerate(wav_files, 1):
     
     try:
         file_segments = diarization_data[audio_path]
+        caller_id = extract_phone_number(str(rel_path))
         
         # Создаем структуру для обогащенных сегментов
         diarization_segments = []
@@ -469,78 +534,109 @@ for idx, audio_path in enumerate(wav_files, 1):
                 "end": end,
                 "speaker": speaker,
                 "is_you": is_you,
-                "text_candidates": []
+                "text_words": []  # Будем собирать слова
             })
         
-        # Объединяем короткие сегменты
-        diarization_segments = merge_short_segments(diarization_segments)
-        
-        # Транскрибация
+        # Транскрипция с метками слов
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=False
+            word_timestamps=True,  # Критично для точного распределения
+            vad_parameters=dict(
+                threshold=0.35,  # Более чувствительный VAD
+                min_speech_duration=0.15
+            )
         )
-        transcriptions = list(segments)
-        print(f"  🔠 Распознано сегментов: {len(transcriptions)}")
         
-        # Сопоставляем транскрипции с диаризацией
-        for t in transcriptions:
+        # Собираем все слова
+        all_words = []
+        for segment in segments:
+            for word in segment.words:
+                all_words.append({
+                    "text": word.word,
+                    "start": word.start,
+                    "end": word.end
+                })
+        print(f"  🔠 Распознано слов: {len(all_words)}")
+        
+        # Распределение слов по сегментам диаризации
+        for word in all_words:
             best_overlap = 0
-            best_segment = None
+            best_seg = None
             
             for d_seg in diarization_segments:
-                overlap_start = max(t.start, d_seg["start"])
-                overlap_end = min(t.end, d_seg["end"])
+                overlap_start = max(word["start"], d_seg["start"])
+                overlap_end = min(word["end"], d_seg["end"])
                 overlap_duration = max(0, overlap_end - overlap_start)
-                t_duration = t.end - t.start
-                overlap_percent = overlap_duration / t_duration if t_duration > 0 else 0
+                word_duration = word["end"] - word["start"]
                 
-                if overlap_percent > best_overlap:
-                    best_overlap = overlap_percent
-                    best_segment = d_seg
+                if word_duration > 0:
+                    overlap_ratio = overlap_duration / word_duration
+                    if overlap_ratio > best_overlap:
+                        best_overlap = overlap_ratio
+                        best_seg = d_seg
             
-            if best_segment and best_overlap > 0.3:
-                best_segment["text_candidates"].append(t.text)
+            if best_seg and best_overlap > 0.3:
+                best_seg["text_words"].append(word["text"])
         
-        # Формируем окончательные сегменты
-        enriched_segments = []
+        # Формируем текст для сегментов
         for d_seg in diarization_segments:
-            if d_seg["text_candidates"]:
-                combined_text = " ".join(d_seg["text_candidates"])
-                enriched_segments.append({
-                    "start": d_seg["start"],
-                    "end": d_seg["end"],
-                    "text": combined_text.strip(),
-                    "is_you": d_seg["is_you"]
-                })
+            if d_seg["text_words"]:
+                d_seg["text"] = " ".join(d_seg["text_words"]).strip()
+            else:
+                d_seg["text"] = ""
+        
+        # Объединяем короткие сегменты (только одного спикера)
+        enriched_segments = merge_short_segments(diarization_segments)
+        enriched_segments = [s for s in enriched_segments if s["text"]]
         
         # Проверяем наличие нескольких спикеров
         unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
         if unique_speakers == 1:
             print("  ⚠️ Внимание: в файле обнаружен только один спикер! Проверьте результат вручную.")
-            
-            # Для файлов с одним спикером используем эвристику: если в файле есть ID телефона, 
-            # то считаем что собеседник - не вы
-            caller_id = extract_phone_number(str(rel_path))
             if caller_id:
                 print(f"  🔄 Для файла с одним спикером используем ID телефона: {caller_id}")
                 for seg in enriched_segments:
                     seg["is_you"] = False
         
+        # Сохраняем/обновляем данные о собеседнике
+        if caller_id and unique_speakers > 1:
+            # Находим эмбеддинг собеседника
+            caller_embeddings = []
+            for speaker in file_to_speakers[audio_path.name]:
+                if not speaker_roles.get((audio_path.name, speaker), True):
+                    if speaker in speaker_embeddings and speaker_embeddings[speaker]:
+                        caller_embeddings.extend(speaker_embeddings[speaker])
+            
+            if caller_embeddings:
+                avg_embedding = np.mean(caller_embeddings, axis=0)
+                avg_embedding = l2_normalize(avg_embedding).flatten()
+                
+                # Обновляем или добавляем эмбеддинг
+                if caller_id in known_caller_ids:
+                    # Экспоненциальное скользящее среднее
+                    known_caller_ids[caller_id] = 0.7 * known_caller_ids[caller_id] + 0.3 * avg_embedding
+                else:
+                    known_caller_ids[caller_id] = avg_embedding
+                
+                print(f"  🔄 Обновлен эмбеддинг для собеседника: {caller_id}")
+        
         # Сохранение результатов
-        caller_id = extract_phone_number(str(rel_path)) or "caller"
+        caller_id = caller_id or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(enriched_segments, output_path, rel_path, "0000000000000", caller_id)
         print(f"  💾 Сохранено сегментов: {len(enriched_segments)} → {output_path}")
         processed_files += 1
         
     except Exception as e:
-        # Улучшенная обработка ошибок с указанием номера строки
         tb = traceback.extract_tb(e.__traceback__)[0]
         print(f"  ❌ Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}")
+
+# Сохраняем известных собеседников
+save_known_callers()
+print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников")
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
