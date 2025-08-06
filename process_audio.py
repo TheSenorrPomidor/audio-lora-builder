@@ -53,6 +53,7 @@ from scipy.spatial.distance import cosine
 import pickle
 
 from faster_whisper import WhisperModel
+from faster_whisper.vad import VadOptions  # Импорт правильного класса VAD
 from pyannote.audio import Pipeline
 from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
@@ -537,17 +538,20 @@ for idx, audio_path in enumerate(wav_files, 1):
                 "text_words": []  # Будем собирать слова
             })
         
-        # Транскрипция с метками слов (используем новый API)
+        # Транскрипция с метками слов (используем правильные параметры VAD)
+        vad_options = VadOptions(
+            onset=0.35,  # Порог для начала речи (более низкое значение = более чувствительное)
+            offset=0.35,  # Порог для окончания речи
+            min_speech_duration_ms=150  # Минимальная длительность речи в мс
+        )
+        
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
             word_timestamps=True,
-            vad_parameters={
-                "threshold": 0.35,
-                "min_speech_duration_ms": 150
-            }
+            vad_parameters=vad_options
         )
         
         # Собираем все слова
