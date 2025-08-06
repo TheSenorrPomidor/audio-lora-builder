@@ -507,6 +507,14 @@ for i in range(len(all_embeddings)):
 print("🔍 Второй проход: транскрипция и формирование JSON...")
 processed_files = 0
 
+# Импортируем VadOptions если доступен
+try:
+    from faster_whisper import VadOptions
+    print("🔊 Используется новый API VAD (VadOptions)")
+except ImportError:
+    VadOptions = None
+    print("🔊 Используется старый API VAD (dict)")
+
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
     output_path = OUTPUT_DIR / rel_path.with_suffix(".json")
@@ -538,17 +546,33 @@ for idx, audio_path in enumerate(wav_files, 1):
             })
         
         # Транскрипция с метками слов
-        segments, info = whisper_model.transcribe(
-            str(audio_path),
-            language="ru",
-            beam_size=5,
-            vad_filter=True,
-            word_timestamps=True,  # Критично для точного распределения
-            vad_parameters=dict(
-                threshold=0.35,  # Более чувствительный VAD
+        if VadOptions:
+            # Для новых версий faster-whisper (>=1.1.0)
+            vad_options = VadOptions(
+                threshold=0.35,
                 min_speech_duration=0.15
             )
-        )
+            segments, info = whisper_model.transcribe(
+                str(audio_path),
+                language="ru",
+                beam_size=5,
+                vad_filter=True,
+                word_timestamps=True,
+                vad_parameters=vad_options
+            )
+        else:
+            # Для старых версий faster-whisper
+            segments, info = whisper_model.transcribe(
+                str(audio_path),
+                language="ru",
+                beam_size=5,
+                vad_filter=True,
+                word_timestamps=True,
+                vad_parameters={
+                    "threshold": 0.35,
+                    "min_speech_duration": 0.15
+                }
+            )
         
         # Собираем все слова
         all_words = []
