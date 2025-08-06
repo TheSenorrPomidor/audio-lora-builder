@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.47 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.48 (Stable GPU)")
 
 import os
 import shutil
@@ -18,6 +18,7 @@ import traceback
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cosine
+from statistics import mode
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -182,7 +183,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 wav_files = list(DST.rglob("*.wav"))
 if not wav_files:
-    print("⚠️ Н�т файлов для обработки")
+    print("⚠️ Нет файлов для обработки")
     exit(0)
 
 print("🔍 Обрабатываем файлы...")
@@ -215,8 +216,8 @@ all_speaker_keys = []
 diarization_data = {}
 embedding_dim = None  # Для проверки размерности
 
-# Словарь для хранения длительности речи по спикерам
-speaker_durations = defaultdict(float)
+# Словарь для связи файл -> спикеры
+file_to_speakers = defaultdict(set)
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
@@ -258,7 +259,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                     continue
                 
                 file_segments.append((seg.start, seg.end, speaker))
-                speaker_durations[speaker] += seg.duration
                 file_speakers.add(speaker)
                 
                 # Извлекаем эмбеддинг для сегмента
@@ -333,6 +333,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                     continue
         
         diarization_data[audio_path] = file_segments
+        file_to_speakers[audio_path.name] = file_speakers
         
         # Усредняем эмбеддинги по спикерам
         for speaker, embeddings_list in speaker_embeddings.items():
@@ -387,23 +388,46 @@ embeddings_reduced = pca.fit_transform(embeddings_array)
 kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
 labels = kmeans.labels_
 
-# Определяем кластер для "я" по внутрикластерному сходству
-cluster0_mask = (labels == 0)
-cluster1_mask = (labels == 1)
+# === Новая стратегия определения "я" по встречаемости ===
+# 1. Создаем словарь для отслеживания кластеров по файлам
+file_clusters = defaultdict(set)
 
-cluster0_emb = embeddings_array[cluster0_mask]
-cluster1_emb = embeddings_array[cluster1_mask]
+# 2. Собираем информацию о том, какие кластеры встречаются в каждом файле
+for i in range(len(all_embeddings)):
+    file_name = all_file_names[i]
+    cluster_id = labels[i]
+    file_clusters[file_name].add(cluster_id)
 
-sim0 = average_pairwise_similarity(cluster0_emb)
-sim1 = average_pairwise_similarity(cluster1_emb)
+# 3. Считаем встречаемость кластеров по файлам
+cluster_files = defaultdict(int)
+for file_name, clusters in file_clusters.items():
+    for cluster_id in clusters:
+        cluster_files[cluster_id] += 1
 
-# Используем только сходство для определения "я", так как статистика по продолжительности ненадежна
-if sim0 > sim1:
+print(f"🔮 Встречаемость кластеров по файлам: Кластер 0: {cluster_files[0]}, Кластер 1: {cluster_files[1]}")
+
+# 4. Определяем кластер "я" как тот, что встречается в большем количестве файлов
+if cluster_files[0] > cluster_files[1]:
     me_cluster = 0
-    print(f"🔮 Кластер 0 идентифицирован как 'я' (сходство: {sim0:.4f} > {sim1:.4f})")
-else:
+    print(f"🔮 Кластер 0 идентифицирован как 'я' (встречается в {cluster_files[0]} файлах)")
+elif cluster_files[1] > cluster_files[0]:
     me_cluster = 1
-    print(f"🔮 Кластер 1 идентифицирован как 'я' (сходство: {sim1:.4f} > {sim0:.4f})")
+    print(f"🔮 Кластер 1 идентифицирован как 'я' (встречается в {cluster_files[1]} файлах)")
+else:
+    # Если встречаемость одинаковая, используем сходство как запасной вариант
+    cluster0_mask = (labels == 0)
+    cluster1_mask = (labels == 1)
+    cluster0_emb = embeddings_array[cluster0_mask]
+    cluster1_emb = embeddings_array[cluster1_mask]
+    sim0 = average_pairwise_similarity(cluster0_emb)
+    sim1 = average_pairwise_similarity(cluster1_emb)
+    
+    if sim0 > sim1:
+        me_cluster = 0
+        print(f"🔮 Кластер 0 идентифицирован как 'я' по сходству (сходство: {sim0:.4f} > {sim1:.4f})")
+    else:
+        me_cluster = 1
+        print(f"🔮 Кластер 1 идентифицирован как 'я' по сходству (сходство: {sim1:.4f} > {sim0:.4f})")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
@@ -492,8 +516,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                     "is_you": d_seg["is_you"]
                 })
         
-        # Удаляем автоматическую коррекцию ролей, так как она ненадежна
-        # Вместо этого просто сообщаем, если обнаружен только один спикер
+        # Проверяем наличие нескольких спикеров
         unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
         if unique_speakers == 1:
             print("  ⚠️ Внимание: в файле обнаружен только один спикер! Проверьте результат вручную.")
