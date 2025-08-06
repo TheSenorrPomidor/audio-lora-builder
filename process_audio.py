@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.46 (Stable GPU)")
+print("\n🔢 Версия скрипта process_audio.py 2.47 (Stable GPU)")
 
 import os
 import shutil
@@ -16,8 +16,8 @@ import wave
 import contextlib
 import traceback
 from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA  # Для уменьшения размерности
-from scipy.spatial.distance import cosine  # Для сравнения эмбеддингов
+from sklearn.decomposition import PCA
+from scipy.spatial.distance import cosine
 
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
@@ -182,7 +182,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 wav_files = list(DST.rglob("*.wav"))
 if not wav_files:
-    print("⚠️ Нет файлов для обработки")
+    print("⚠️ Н�т файлов для обработки")
     exit(0)
 
 print("🔍 Обрабатываем файлы...")
@@ -239,6 +239,9 @@ for idx, audio_path in enumerate(wav_files, 1):
         file_segments = []
         speaker_embeddings = defaultdict(list)
         
+        # Собираем всех спикеров для этого файла
+        file_speakers = set()
+        
         for segment in diarization.itertracks(yield_label=True):
             if isinstance(segment, tuple) and len(segment) == 3:
                 turn, _, speaker = segment
@@ -256,6 +259,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 file_segments.append((seg.start, seg.end, speaker))
                 speaker_durations[speaker] += seg.duration
+                file_speakers.add(speaker)
                 
                 # Извлекаем эмбеддинг для сегмента
                 try:
@@ -383,7 +387,7 @@ embeddings_reduced = pca.fit_transform(embeddings_array)
 kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
 labels = kmeans.labels_
 
-# Определяем кластер для "я" по внутрикластерному сходству и количеству сегментов
+# Определяем кластер для "я" по внутрикластерному сходству
 cluster0_mask = (labels == 0)
 cluster1_mask = (labels == 1)
 
@@ -393,23 +397,13 @@ cluster1_emb = embeddings_array[cluster1_mask]
 sim0 = average_pairwise_similarity(cluster0_emb)
 sim1 = average_pairwise_similarity(cluster1_emb)
 
-# Определение по продолжительности речи (предполагаем, что вы говорите больше)
-duration0 = sum(duration for i, duration in enumerate(speaker_durations.values()) if labels[i] == 0)
-duration1 = sum(duration for i, duration in enumerate(speaker_durations.values()) if labels[i] == 1)
-
-print(f"🔮 Сходство кластера 0: {sim0:.4f}, кластера 1: {sim1:.4f}")
-print(f"🔮 Продолжительность речи: кластер 0: {duration0:.2f}s, кластер 1: {duration1:.2f}s")
-
-# Комбинированное решение: сходство + продолжительность
-if abs(sim0 - sim1) < 0.1:  # Малая разница в сходстве
-    me_cluster = 0 if duration0 > duration1 else 1
-    print(f"🔮 Малая разница в сходстве. Выбран кластер {me_cluster} по продолжительности речи")
+# Используем только сходство для определения "я", так как статистика по продолжительности ненадежна
+if sim0 > sim1:
+    me_cluster = 0
+    print(f"🔮 Кластер 0 идентифицирован как 'я' (сходство: {sim0:.4f} > {sim1:.4f})")
 else:
-    if sim0 > sim1:
-        me_cluster = 0
-    else:
-        me_cluster = 1
-    print(f"🔮 Кластер {me_cluster} идентифицирован как 'я' по сходству")
+    me_cluster = 1
+    print(f"🔮 Кластер 1 идентифицирован как 'я' (сходство: {sim1:.4f} > {sim0:.4f})")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
@@ -498,17 +492,11 @@ for idx, audio_path in enumerate(wav_files, 1):
                     "is_you": d_seg["is_you"]
                 })
         
-        # Дополнительная проверка для файлов с одним спикером
-        if len(set(seg["is_you"] for seg in enriched_segments)) == 1:
-            print("  ⚠️ В файле обнаружен только один спикер!")
-            # Попробуем определить по продолжительности речи
-            your_duration = sum(seg["end"] - seg["start"] for seg in enriched_segments if seg["is_you"])
-            other_duration = sum(seg["end"] - seg["start"] for seg in enriched_segments if not seg["is_you"])
-            
-            if your_duration == 0 or other_duration > your_duration * 1.5:
-                print("  🔄 Корректируем роли спикеров (основной спикер - не вы)")
-                for seg in enriched_segments:
-                    seg["is_you"] = not seg["is_you"]
+        # Удаляем автоматическую коррекцию ролей, так как она ненадежна
+        # Вместо этого просто сообщаем, если обнаружен только один спикер
+        unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
+        if unique_speakers == 1:
+            print("  ⚠️ Внимание: в файле обнаружен только один спикер! Проверьте результат вручную.")
         
         # Сохранение результатов
         caller_id = extract_phone_number(str(rel_path)) or "caller"
