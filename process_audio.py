@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.50 (Stable GPU Enhanced)")
+print("\n🔢 Версия скрипта process_audio.py 2.60 (Stable GPU Enhanced)")
 
 """
 Требуемые зависимости:
@@ -445,56 +445,50 @@ embeddings_reduced = pca.fit_transform(embeddings_array)
 kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
 labels = kmeans.labels_
 
-# === Улучшенное определение "я" с учетом известных собеседников ===
-if known_caller_ids:
-    # Проверяем сходство кластеров с известными собеседниками
-    cluster_similarity = {0: 0.0, 1: 0.0}
-    cluster_counts = {0: 0, 1: 0}
-    
-    for i, embedding in enumerate(all_embeddings):
-        cluster = labels[i]
-        for known_embed in known_caller_ids.values():
-            similarity = 1 - cosine(embedding, known_embed)
-            cluster_similarity[cluster] += similarity
-            cluster_counts[cluster] += 1
-    
-    # Нормализуем сходство
-    for cluster in [0, 1]:
-        if cluster_counts[cluster] > 0:
-            cluster_similarity[cluster] /= cluster_counts[cluster]
-    
-    print(f"🔮 Сходство кластеров с известными собеседниками: Кластер 0: {cluster_similarity[0]:.4f}, Кластер 1: {cluster_similarity[1]:.4f}")
-    
-    # Кластер с наименьшим сходством - вероятнее всего "я"
-    if cluster_similarity[0] < cluster_similarity[1]:
-        me_cluster = 0
-        print(f"🔮 Кластер 0 идентифицирован как 'я' (сходство: {cluster_similarity[0]:.4f})")
-    else:
-        me_cluster = 1
-        print(f"🔮 Кластер 1 идентифицирован как 'я' (сходство: {cluster_similarity[1]:.4f})")
+# === Улучшенное определение "я" по охвату файлов ===
+print("🔮 Улучшенная идентификация 'я' по охвату файлов...")
+
+# Считаем уникальные файлы для каждого кластера
+cluster_files = {0: set(), 1: set()}
+for i in range(len(all_embeddings)):
+    file_name = all_file_names[i]
+    cluster_id = labels[i]
+    cluster_files[cluster_id].add(file_name)
+
+# Выбираем кластер с максимальным охватом файлов
+file_counts = {0: len(cluster_files[0]), 1: len(cluster_files[1])}
+print(f"🔮 Файлов в кластере 0: {file_counts[0]}, в кластере 1: {file_counts[1]}")
+
+if file_counts[0] >= file_counts[1]:
+    me_cluster = 0
+    print(f"🔮 Кластер 0 идентифицирован как 'я' (охват: {file_counts[0]}/{len(wav_files)} файлов)")
 else:
-    # Стандартная логика (если нет известных собеседников)
-    file_clusters = defaultdict(set)
-    for i in range(len(all_embeddings)):
-        file_name = all_file_names[i]
-        cluster_id = labels[i]
-        file_clusters[file_name].add(cluster_id)
+    me_cluster = 1
+    print(f"🔮 Кластер 1 идентифицирован как 'я' (охват: {file_counts[1]}/{len(wav_files)} файлов)")
 
-    cluster_weights = defaultdict(float)
-    for file_name, clusters in file_clusters.items():
-        weight = 1.0
-        if len(clusters) > 1:
-            weight = 2.0
-        for cluster_id in clusters:
-            cluster_weights[cluster_id] += weight
-
-    print(f"🔮 Вес кластеров: Кластер 0: {cluster_weights[0]:.1f}, Кластер 1: {cluster_weights[1]:.1f}")
-    if cluster_weights[0] > cluster_weights[1]:
-        me_cluster = 0
-        print(f"🔮 Кластер 0 идентифицирован как 'я' (вес: {cluster_weights[0]:.1f})")
-    else:
-        me_cluster = 1
-        print(f"🔮 Кластер 1 идентифицирован как 'я' (вес: {cluster_weights[1]:.1f})")
+# Проверка качества диаризации в проблемных файлах
+for audio_path in wav_files:
+    if audio_path.name not in file_to_speakers: 
+        continue
+        
+    speakers = file_to_speakers[audio_path.name]
+    if len(speakers) < 2: 
+        continue  # Пропускаем файлы с 1 спикером
+        
+    embeddings = []
+    for speaker in speakers:
+        # Получаем усредненный эмбеддинг спикера
+        emb = next((e for e, f, s in zip(all_embeddings, all_file_names, all_speaker_keys) 
+                  if f == audio_path.name and s == speaker), None)
+        if emb is not None:
+            embeddings.append(emb)
+    
+    # Проверяем сходство голосов внутри файла
+    if len(embeddings) >= 2:
+        avg_sim = average_pairwise_similarity(embeddings)
+        if avg_sim > 0.85:  # Порог сходства
+            print(f"⚠️ Внимание! В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f}).")
+            print("   Ручная проверка рекомендована.")
 
 # Создаем словарь для определения ролей
 speaker_roles = {}
@@ -598,10 +592,13 @@ for idx, audio_path in enumerate(wav_files, 1):
         
         # Проверяем наличие нескольких спикеров
         unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
+        
+        # Улучшенная обработка файлов с одним спикером
         if unique_speakers == 1:
-            print("  ⚠️ Внимание: в файле обнаружен только один спикер! Проверьте результат вручную.")
-            if caller_id:
-                print(f"  🔄 Для файла с одним спикером используем ID телефона: {caller_id}")
+            if enriched_segments and enriched_segments[0]["is_you"]:
+                print("  ⚠️ Внимание: в файле обнаружен только один спикер, помеченный как 'я'! Проверьте вручную.")
+            else:
+                print("  ✅ В файле один спикер: помечен как собеседник.")
                 for seg in enriched_segments:
                     seg["is_you"] = False
         
@@ -611,8 +608,12 @@ for idx, audio_path in enumerate(wav_files, 1):
             caller_embeddings = []
             for speaker in file_to_speakers[audio_path.name]:
                 if not speaker_roles.get((audio_path.name, speaker), True):
-                    if speaker in speaker_embeddings and speaker_embeddings[speaker]:
-                        caller_embeddings.extend(speaker_embeddings[speaker])
+                    # Получаем эмбеддинги для этого спикера
+                    speaker_embs = [e for i, e in enumerate(all_embeddings) 
+                                  if all_file_names[i] == audio_path.name 
+                                  and all_speaker_keys[i] == speaker]
+                    if speaker_embs:
+                        caller_embeddings.extend(speaker_embs)
             
             if caller_embeddings:
                 avg_embedding = np.mean(caller_embeddings, axis=0)
