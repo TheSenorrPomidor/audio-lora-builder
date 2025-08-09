@@ -1,4 +1,4 @@
-Требуемые зависимости process_audio.py:
+Требуемые зависимости для process_audio.py:
 
 === Системные пакеты (deb) ===
 python3-pip

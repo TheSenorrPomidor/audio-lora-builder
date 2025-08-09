@@ -761,11 +761,16 @@ logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
 
 # Прогрев моделей
-Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
-Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+#Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
+#Model.from_pretrained("pyannote/embedding", use_auth_token=True)
 
 # Загружаем диаризатор
-pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
+#Было
+#pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
+#Стало
+from pyannote.audio import Pipeline
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=r'$HFToken')
+#
 
 # Настраиваем чувствительность
 pipeline.onset = 0.767                 # 0.767 по умолчанию. Порог включения речи — насколько сильно модель должна "поверить", что начался голос. меньше значение → больше чувствительность
@@ -818,7 +823,7 @@ else {
 		wsl -d $DistroName -- bash -c "mkdir -p '$ModelCacheWinWsl' && cp -r '$ModelCacheLocalWsl/'* '$ModelCacheWinWsl/'"
 		Write-Host "✅ Кэш скачен и скопирован Windows => WSL."
 		#Удаляем следы токена из WSL
-		wsl -d $DistroName -- bash -c "rm -f ~/.cache/huggingface/token ~/.cache/huggingface/stored_tokens"
+		#wsl -d $DistroName -- bash -c "rm -f ~/.cache/huggingface/token ~/.cache/huggingface/stored_tokens"
 	}
 }
 
