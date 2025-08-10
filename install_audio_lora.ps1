@@ -761,16 +761,11 @@ logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
 
 # Прогрев моделей
-#Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
-#Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+Model.from_pretrained("pyannote/segmentation", use_auth_token=True)
+Model.from_pretrained("pyannote/embedding", use_auth_token=True)
 
 # Загружаем диаризатор
-#Было
-#pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
-#Стало
-from pyannote.audio import Pipeline
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=r'$HFToken')
-#
+pipeline = SpeakerDiarization.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=True)
 
 # Настраиваем чувствительность
 pipeline.onset = 0.767                 # 0.767 по умолчанию. Порог включения речи — насколько сильно модель должна "поверить", что начался голос. меньше значение → больше чувствительность
