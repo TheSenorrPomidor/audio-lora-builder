@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.70 (Stable GPU Enhanced)")
+print("\n🔢 Версия скрипта process_audio.py 2.75 (Enhanced Diarization)")
 
 """
 Требуемые зависимости остаются без изменений
@@ -94,7 +94,7 @@ def average_pairwise_similarity(embeddings):
             
     return total / count if count > 0 else 0.0
 
-def merge_short_segments(segments, min_duration=0.3, max_gap=0.3):
+def merge_short_segments(segments, min_duration=0.5, max_gap=0.5):
     """Объединяет короткие сегменты с учетом пауз"""
     if not segments:
         return []
@@ -453,7 +453,8 @@ for audio_path in wav_files:
     
     if len(embeddings) >= 2:
         avg_sim = average_pairwise_similarity(embeddings)
-        if avg_sim > 0.85:
+        # Более чувствительный порог для похожих голосов
+        if avg_sim > 0.75:
             print(f"⚠️ Внимание! В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f}).")
 
 # === Второй проход: транскрипция ===
@@ -486,7 +487,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 "end": end,
                 "speaker": speaker,
                 "is_you": is_you,
-                "text_words": []
+                "text": ""  # Будем добавлять целые сегменты
             })
         
         vad_options = VadOptions(
@@ -495,64 +496,72 @@ for idx, audio_path in enumerate(wav_files, 1):
             min_speech_duration_ms=150
         )
         
+        # Отключаем word_timestamps для работы с целыми сегментами
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=True,
+            word_timestamps=False,  # Ключевое изменение: отключаем поразбивку на слова
             vad_parameters=vad_options
         )
         
-        all_words = []
+        # Собираем сегменты транскрипции целиком
+        whisper_segments = []
         for segment in segments:
-            for word in segment.words:
-                all_words.append({
-                    "text": word.word,
-                    "start": word.start,
-                    "end": word.end
-                })
-        print(f"  🔠 Распознано слов: {len(all_words)}")
+            whisper_segments.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text.strip()
+            })
+        print(f"  🔠 Распознано сегментов: {len(whisper_segments)}")
         
-        for word in all_words:
+        # Распределяем целые сегменты транскрипции по сегментам диаризации
+        for seg_trans in whisper_segments:
             best_overlap = 0
             best_seg = None
+            trans_duration = seg_trans["end"] - seg_trans["start"]
             
             for d_seg in diarization_segments:
-                overlap_start = max(word["start"], d_seg["start"])
-                overlap_end = min(word["end"], d_seg["end"])
+                overlap_start = max(seg_trans["start"], d_seg["start"])
+                overlap_end = min(seg_trans["end"], d_seg["end"])
                 overlap_duration = max(0, overlap_end - overlap_start)
-                word_duration = word["end"] - word["start"]
                 
-                if word_duration > 0:
-                    overlap_ratio = overlap_duration / word_duration
-                    if overlap_ratio > best_overlap:
-                        best_overlap = overlap_ratio
-                        best_seg = d_seg
+                if trans_duration > 0:
+                    overlap_ratio = overlap_duration / trans_duration
+                else:
+                    overlap_ratio = 0
+                
+                if overlap_ratio > best_overlap:
+                    best_overlap = overlap_ratio
+                    best_seg = d_seg
             
             if best_seg and best_overlap > 0.3:
-                best_seg["text_words"].append(word["text"])
+                if best_seg["text"]:
+                    best_seg["text"] += " " + seg_trans["text"]
+                else:
+                    best_seg["text"] = seg_trans["text"]
         
-        for d_seg in diarization_segments:
-            if d_seg["text_words"]:
-                d_seg["text"] = " ".join(d_seg["text_words"]).strip()
-            else:
-                d_seg["text"] = ""
+        # Фильтруем пустые сегменты
+        diarization_segments = [s for s in diarization_segments if s["text"]]
         
+        # Объединяем короткие сегменты с увеличенными параметрами
         enriched_segments = merge_short_segments(diarization_segments)
-        enriched_segments = [s for s in enriched_segments if s["text"]]
         
+        # Проверка на ошибки диаризации
         unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
+        num_speakers_diarized = len(file_to_speakers.get(audio_path.name, set()))
         
-        if unique_speakers == 1:
-            if enriched_segments and enriched_segments[0]["is_you"]:
-                print("  ⚠️ Внимание: в файле обнаружен только один спикер, помеченный как 'я'! Проверьте вручную.")
-            else:
-                print("  ✅ В файле один спикер: помечен как собеседник.")
-                for seg in enriched_segments:
-                    seg["is_you"] = False
+        # Принудительное разделение при подозрении на ошибку
+        if unique_speakers == 1 and num_speakers_diarized > 1:
+            print(f"  ⚠️ Принудительное разделение спикеров (диаризация: {num_speakers_diarized}, результат: {unique_speakers})")
+            # Разделяем сегменты на 2 группы по времени
+            mid_point = get_audio_duration(audio_path) / 2
+            for seg in enriched_segments:
+                seg["is_you"] = seg["start"] < mid_point
         
-        if caller_id and unique_speakers > 1:
+        # Обновляем эмбеддинги собеседника
+        if caller_id and any(not seg["is_you"] for seg in enriched_segments):
             caller_embeddings = []
             for speaker in file_to_speakers[audio_path.name]:
                 if not speaker_roles.get((audio_path.name, speaker), True):
