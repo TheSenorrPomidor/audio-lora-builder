@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.76 (Enhanced Diarization & Recovery)")
+print("\n🔢 Версия скрипта process_audio.py 2.77 (Final Diarization Fix)")
 
 import os
 import shutil
@@ -112,14 +112,6 @@ def merge_short_segments(segments, min_duration=0.5, max_gap=0.5):
     
     merged.append(current)
     return merged
-
-def detect_robotic_voice(text):
-    """Определяет, является ли текст системным сообщением (робот)"""
-    robotic_phrases = [
-        "звониваться", "оставайтесь на линии", "ожидайте", "соединяем",
-        "пожалуйста не вешайте трубку", "добро пожаловать", "ваш звонок очень важен"
-    ]
-    return any(phrase in text.lower() for phrase in robotic_phrases)
 
 # === Глобальный словарь известных собеседников ===
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
@@ -520,27 +512,19 @@ for idx, audio_path in enumerate(wav_files, 1):
             min_speech_duration_ms=150
         )
         
-        # Транскрипция с включенными временными метками слов для восстановления
+        # Транскрипция с включенными временными метками слов
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=True,  # Включаем для восстановления пропущенных сегментов
+            word_timestamps=True,
             vad_parameters=vad_options
         )
         
-        # Собираем все слова и сегменты для восстановления
+        # Собираем все слова для точного восстановления
         all_words = []
-        all_segments = []
         for segment in segments:
-            segment_text = segment.text.strip()
-            all_segments.append({
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment_text
-            })
-            
             for word in segment.words:
                 all_words.append({
                     "text": word.word,
@@ -548,11 +532,36 @@ for idx, audio_path in enumerate(wav_files, 1):
                     "end": word.end
                 })
         
-        print(f"  🔠 Распознано сегментов: {len(all_segments)}, слов: {len(all_words)}")
+        # Собираем сегменты транскрипции целиком
+        whisper_segments = []
+        current_segment = None
+        for word in all_words:
+            if current_segment is None:
+                current_segment = {
+                    "start": word["start"],
+                    "end": word["end"],
+                    "text": word["text"]
+                }
+            else:
+                # Объединяем слова в сегменты, если они близки по времени
+                if word["start"] - current_segment["end"] < 0.5:  # Менее 0.5 сек между словами
+                    current_segment["end"] = word["end"]
+                    current_segment["text"] += " " + word["text"]
+                else:
+                    whisper_segments.append(current_segment)
+                    current_segment = {
+                        "start": word["start"],
+                        "end": word["end"],
+                        "text": word["text"]
+                    }
+        
+        if current_segment:
+            whisper_segments.append(current_segment)
+        
+        print(f"  🔠 Распознано сегментов: {len(whisper_segments)}")
         
         # Распределяем целые сегменты транскрипции по сегментам диаризации
-        unassigned_segments = []
-        for seg_trans in all_segments:
+        for seg_trans in whisper_segments:
             best_overlap = 0
             best_seg = None
             trans_duration = seg_trans["end"] - seg_trans["start"]
@@ -576,43 +585,47 @@ for idx, audio_path in enumerate(wav_files, 1):
                     best_seg["text"] += " " + seg_trans["text"]
                 else:
                     best_seg["text"] = seg_trans["text"]
-            else:
-                unassigned_segments.append(seg_trans)
-        
-        # Восстановление пропущенных сегментов
-        if unassigned_segments:
-            print(f"  🔄 Восстановление {len(unassigned_segments)} пропущенных сегментов")
-            for seg in unassigned_segments:
-                # Определяем спикера по ближайшему сегменту диаризации
-                closest_seg = None
-                min_distance = float('inf')
-                
-                for d_seg in diarization_segments:
-                    distance = min(
-                        abs(seg["start"] - d_seg["end"]),
-                        abs(seg["end"] - d_seg["start"])
-                    )
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_seg = d_seg
-                
-                if closest_seg:
-                    # Создаем новый сегмент с теми же параметрами спикера
-                    new_seg = {
-                        "start": seg["start"],
-                        "end": seg["end"],
-                        "speaker": closest_seg["speaker"],
-                        "is_you": closest_seg["is_you"],
-                        "text": seg["text"]
-                    }
-                    diarization_segments.append(new_seg)
-        
-        # Сортировка сегментов по времени начала
-        diarization_segments.sort(key=lambda x: x["start"])
         
         # Фильтруем пустые сегменты
         diarization_segments = [s for s in diarization_segments if s["text"].strip()]
+        
+        # Обнаружение и обработка третьего спикера (робота)
+        speaker_durations = defaultdict(float)
+        for seg in diarization_segments:
+            speaker = seg["speaker"]
+            duration = seg["end"] - seg["start"]
+            speaker_durations[speaker] += duration
+        
+        total_duration = sum(speaker_durations.values())
+        if len(speaker_durations) >= 3:
+            # Находим спикера с наименьшей длительностью
+            min_speaker = min(speaker_durations, key=speaker_durations.get)
+            min_duration = speaker_durations[min_speaker]
+            
+            # Если спикер говорит менее 10% от общего времени, игнорируем его
+            if min_duration < total_duration * 0.1:
+                print(f"  🤖 Обнаружен малозначимый спикер: {min_speaker} (доля: {min_duration/total_duration:.2f})")
+                
+                # Перераспределяем сегменты к ближайшему основному спикеру
+                main_speakers = [spk for spk in speaker_durations.keys() if spk != min_speaker]
+                for seg in diarization_segments:
+                    if seg["speaker"] == min_speaker:
+                        # Находим ближайший по времени сегмент из основных спикеров
+                        closest_seg = None
+                        min_distance = float('inf')
+                        for other_seg in diarization_segments:
+                            if other_seg["speaker"] in main_speakers:
+                                distance = min(
+                                    abs(seg["start"] - other_seg["end"]),
+                                    abs(seg["end"] - other_seg["start"])
+                                )
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    closest_seg = other_seg
+                        
+                        if closest_seg:
+                            seg["speaker"] = closest_seg["speaker"]
+                            seg["is_you"] = closest_seg["is_you"]
         
         # Объединяем короткие сегменты
         enriched_segments = merge_short_segments(diarization_segments)
@@ -628,13 +641,6 @@ for idx, audio_path in enumerate(wav_files, 1):
             mid_point = get_audio_duration(audio_path) / 2
             for seg in enriched_segments:
                 seg["is_you"] = seg["start"] < mid_point
-        
-        # Обработка системных сообщений (автоответчиков)
-        for seg in enriched_segments:
-            if detect_robotic_voice(seg["text"]):
-                seg["is_you"] = False  # Помечаем как не-человека
-                seg["speaker"] = "system"
-                print(f"  🤖 Обнаружено системное сообщение: {seg['text'][:50]}...")
         
         # Обновляем эмбеддинги собеседника
         if caller_id != "caller" and any(not seg["is_you"] for seg in enriched_segments):
