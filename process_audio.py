@@ -1,10 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.75 (Enhanced Diarization)")
-
-"""
-Требуемые зависимости остаются без изменений
-"""
+print("\n🔢 Версия скрипта process_audio.py 2.76 (Enhanced Diarization & Recovery)")
 
 import os
 import shutil
@@ -116,6 +112,14 @@ def merge_short_segments(segments, min_duration=0.5, max_gap=0.5):
     
     merged.append(current)
     return merged
+
+def detect_robotic_voice(text):
+    """Определяет, является ли текст системным сообщением (робот)"""
+    robotic_phrases = [
+        "звониваться", "оставайтесь на линии", "ожидайте", "соединяем",
+        "пожалуйста не вешайте трубку", "добро пожаловать", "ваш звонок очень важен"
+    ]
+    return any(phrase in text.lower() for phrase in robotic_phrases)
 
 # === Глобальный словарь известных собеседников ===
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
@@ -234,7 +238,7 @@ all_speaker_keys = []
 diarization_data = {}
 embedding_dim = None
 
-# Ключевое изменение 1: Сохраняем усредненные эмбеддинги для каждого спикера
+# Сохраняем усредненные эмбеддинги для каждого спикера
 file_speaker_avg_embeddings = {}  # (file_name, speaker) -> avg_embedding
 file_to_speakers = defaultdict(set)
 
@@ -344,7 +348,7 @@ for idx, audio_path in enumerate(wav_files, 1):
         diarization_data[audio_path] = file_segments
         file_to_speakers[audio_path.name] = file_speakers
         
-        # Ключевое изменение 2: Сохраняем усредненные эмбеддинги для каждого спикера
+        # Сохраняем усредненные эмбеддинги для каждого спикера
         for speaker, embeddings_list in speaker_embeddings.items():
             if embeddings_list:
                 dims = [e.shape[0] for e in embeddings_list]
@@ -412,7 +416,7 @@ else:
     main_cluster = 1
     print(f"🔮 Основной кластер 1 (охват: {file_counts[1]}/{len(wav_files)} файлов)")
 
-# Ключевое изменение 3: Точное определение ролей через расстояния до центроидов
+# Точное определение ролей через расстояния до центроидов
 print("🔮 Точное определение ролей через расстояния до центроидов...")
 centroid_0 = kmeans.cluster_centers_[0]
 centroid_1 = kmeans.cluster_centers_[1]
@@ -457,6 +461,26 @@ for audio_path in wav_files:
         if avg_sim > 0.75:
             print(f"⚠️ Внимание! В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f}).")
 
+# === Коррекция ролей с использованием известных собеседников ===
+print("🔧 Коррекция ролей с использованием известных собеседников...")
+for audio_path in wav_files:
+    file_name = audio_path.name
+    caller_id = extract_phone_number(str(audio_path.relative_to(DST)))
+    
+    if caller_id and caller_id in known_caller_ids:
+        known_emb = known_caller_ids[caller_id]
+        speakers = file_to_speakers.get(file_name, set())
+        
+        for speaker in speakers:
+            key = (file_name, speaker)
+            if key in file_speaker_avg_embeddings:
+                current_emb = file_speaker_avg_embeddings[key]
+                similarity = 1 - cosine(current_emb, known_emb)
+                
+                if similarity > 0.7:  # Высокое сходство
+                    speaker_roles[key] = False  # Помечаем как собеседника
+                    print(f"  🔧 {file_name}:{speaker} -> собеседник (сходство: {similarity:.2f})")
+
 # === Второй проход: транскрипция ===
 print("🔍 Второй проход: транскрипция и формирование JSON...")
 processed_files = 0
@@ -477,7 +501,7 @@ for idx, audio_path in enumerate(wav_files, 1):
     
     try:
         file_segments = diarization_data[audio_path]
-        caller_id = extract_phone_number(str(rel_path))
+        caller_id = extract_phone_number(str(rel_path)) or "caller"
         
         diarization_segments = []
         for start, end, speaker in file_segments:
@@ -496,28 +520,39 @@ for idx, audio_path in enumerate(wav_files, 1):
             min_speech_duration_ms=150
         )
         
-        # Отключаем word_timestamps для работы с целыми сегментами
+        # Транскрипция с включенными временными метками слов для восстановления
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=False,  # Ключевое изменение: отключаем поразбивку на слова
+            word_timestamps=True,  # Включаем для восстановления пропущенных сегментов
             vad_parameters=vad_options
         )
         
-        # Собираем сегменты транскрипции целиком
-        whisper_segments = []
+        # Собираем все слова и сегменты для восстановления
+        all_words = []
+        all_segments = []
         for segment in segments:
-            whisper_segments.append({
+            segment_text = segment.text.strip()
+            all_segments.append({
                 "start": segment.start,
                 "end": segment.end,
-                "text": segment.text.strip()
+                "text": segment_text
             })
-        print(f"  🔠 Распознано сегментов: {len(whisper_segments)}")
+            
+            for word in segment.words:
+                all_words.append({
+                    "text": word.word,
+                    "start": word.start,
+                    "end": word.end
+                })
+        
+        print(f"  🔠 Распознано сегментов: {len(all_segments)}, слов: {len(all_words)}")
         
         # Распределяем целые сегменты транскрипции по сегментам диаризации
-        for seg_trans in whisper_segments:
+        unassigned_segments = []
+        for seg_trans in all_segments:
             best_overlap = 0
             best_seg = None
             trans_duration = seg_trans["end"] - seg_trans["start"]
@@ -541,11 +576,45 @@ for idx, audio_path in enumerate(wav_files, 1):
                     best_seg["text"] += " " + seg_trans["text"]
                 else:
                     best_seg["text"] = seg_trans["text"]
+            else:
+                unassigned_segments.append(seg_trans)
+        
+        # Восстановление пропущенных сегментов
+        if unassigned_segments:
+            print(f"  🔄 Восстановление {len(unassigned_segments)} пропущенных сегментов")
+            for seg in unassigned_segments:
+                # Определяем спикера по ближайшему сегменту диаризации
+                closest_seg = None
+                min_distance = float('inf')
+                
+                for d_seg in diarization_segments:
+                    distance = min(
+                        abs(seg["start"] - d_seg["end"]),
+                        abs(seg["end"] - d_seg["start"])
+                    )
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_seg = d_seg
+                
+                if closest_seg:
+                    # Создаем новый сегмент с теми же параметрами спикера
+                    new_seg = {
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "speaker": closest_seg["speaker"],
+                        "is_you": closest_seg["is_you"],
+                        "text": seg["text"]
+                    }
+                    diarization_segments.append(new_seg)
+        
+        # Сортировка сегментов по времени начала
+        diarization_segments.sort(key=lambda x: x["start"])
         
         # Фильтруем пустые сегменты
-        diarization_segments = [s for s in diarization_segments if s["text"]]
+        diarization_segments = [s for s in diarization_segments if s["text"].strip()]
         
-        # Объединяем короткие сегменты с увеличенными параметрами
+        # Объединяем короткие сегменты
         enriched_segments = merge_short_segments(diarization_segments)
         
         # Проверка на ошибки диаризации
@@ -560,8 +629,15 @@ for idx, audio_path in enumerate(wav_files, 1):
             for seg in enriched_segments:
                 seg["is_you"] = seg["start"] < mid_point
         
+        # Обработка системных сообщений (автоответчиков)
+        for seg in enriched_segments:
+            if detect_robotic_voice(seg["text"]):
+                seg["is_you"] = False  # Помечаем как не-человека
+                seg["speaker"] = "system"
+                print(f"  🤖 Обнаружено системное сообщение: {seg['text'][:50]}...")
+        
         # Обновляем эмбеддинги собеседника
-        if caller_id and any(not seg["is_you"] for seg in enriched_segments):
+        if caller_id != "caller" and any(not seg["is_you"] for seg in enriched_segments):
             caller_embeddings = []
             for speaker in file_to_speakers[audio_path.name]:
                 if not speaker_roles.get((audio_path.name, speaker), True):
@@ -574,13 +650,13 @@ for idx, audio_path in enumerate(wav_files, 1):
                 avg_embedding = l2_normalize(avg_embedding).flatten()
                 
                 if caller_id in known_caller_ids:
+                    # Взвешенное обновление эмбеддинга
                     known_caller_ids[caller_id] = 0.7 * known_caller_ids[caller_id] + 0.3 * avg_embedding
                 else:
                     known_caller_ids[caller_id] = avg_embedding
                 
                 print(f"  🔄 Обновлен эмбеддинг для собеседника: {caller_id}")
         
-        caller_id = caller_id or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(enriched_segments, output_path, rel_path, "0000000000000", caller_id)
         print(f"  💾 Сохранено сегментов: {len(enriched_segments)} → {output_path}")
