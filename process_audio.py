@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.78 (Optimized Phrase Alignment)")
+print("\n🔢 Версия скрипта process_audio.py 2.85 (Advanced Voice Vector Matching)")
 
 import os
 import shutil
@@ -15,10 +15,8 @@ from collections import defaultdict
 import wave
 import contextlib
 import traceback
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from scipy.spatial.distance import cosine
 import pickle
+from scipy.spatial.distance import cosine
 
 from faster_whisper import WhisperModel
 from faster_whisper.vad import VadOptions
@@ -74,22 +72,6 @@ def l2_normalize(embeddings):
     norms[norms == 0] = 1
     return embeddings / norms
 
-def average_pairwise_similarity(embeddings):
-    """Calculate average cosine similarity for embeddings"""
-    n = len(embeddings)
-    if n < 2:
-        return 0.0
-    
-    total = 0.0
-    count = 0
-    for i in range(n):
-        for j in range(i+1, n):
-            similarity = 1 - cosine(embeddings[i], embeddings[j])
-            total += similarity
-            count += 1
-            
-    return total / count if count > 0 else 0.0
-
 def merge_short_segments(segments, min_duration=0.5, max_gap=0.5):
     """Объединяет короткие сегменты с учетом пауз"""
     if not segments:
@@ -113,6 +95,23 @@ def merge_short_segments(segments, min_duration=0.5, max_gap=0.5):
     merged.append(current)
     return merged
 
+# === Глобальный эталонный эмбеддинг для "я" ===
+YOU_EMBEDDING_FILE = Path("/root/audio-lora-builder/config/you_embedding.pkl")
+you_embedding = None  # Глобальный эталонный эмбеддинг для вашего голоса
+
+if YOU_EMBEDDING_FILE.exists():
+    try:
+        with open(YOU_EMBEDDING_FILE, "rb") as f:
+            you_embedding = pickle.load(f)
+        print(f"🔊 Загружен эталонный эмбеддинг для 'я'")
+    except:
+        print("⚠️ Не удалось загрузить эталонный эмбеддинг для 'я'")
+
+def save_you_embedding():
+    if you_embedding is not None:
+        with open(YOU_EMBEDDING_FILE, "wb") as f:
+            pickle.dump(you_embedding, f)
+
 # === Глобальный словарь известных собеседников ===
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
 known_caller_ids = {}  # caller_id -> embedding
@@ -128,6 +127,33 @@ if KNOWN_CALLERS_FILE.exists():
 def save_known_callers():
     with open(KNOWN_CALLERS_FILE, "wb") as f:
         pickle.dump(known_caller_ids, f)
+
+# === Глобальный словарь системных голосов ===
+SYSTEM_VOICES_FILE = Path("/root/audio-lora-builder/config/system_voices.pkl")
+system_voices = []  # список эмбеддингов системных голосов
+
+if SYSTEM_VOICES_FILE.exists():
+    try:
+        with open(SYSTEM_VOICES_FILE, "rb") as f:
+            system_voices = pickle.load(f)
+        print(f"🔊 Загружено {len(system_voices)} системных голосов")
+    except:
+        print("⚠️ Не удалось загрузить системные голоса")
+
+def save_system_voices():
+    with open(SYSTEM_VOICES_FILE, "wb") as f:
+        pickle.dump(system_voices, f)
+
+def is_system_voice(embedding, threshold=0.85):
+    """Определяет, является ли голос системным"""
+    if not system_voices:
+        return False
+        
+    for sys_emb in system_voices:
+        similarity = 1 - cosine(embedding, sys_emb)
+        if similarity > threshold:
+            return True
+    return False
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -224,15 +250,9 @@ embedding_model = Inference(
 
 # === Первый проход: извлечение эмбеддингов ===
 print("🔍 Первый проход: извлечение голосовых эмбеддингов...")
-all_embeddings = []
-all_file_names = []
-all_speaker_keys = []
-diarization_data = {}
-embedding_dim = None
-
-# Сохраняем усредненные эмбеддинги для каждого спикера
-file_speaker_avg_embeddings = {}  # (file_name, speaker) -> avg_embedding
+file_speaker_embeddings = defaultdict(list)  # (file_name, speaker) -> [embeddings]
 file_to_speakers = defaultdict(set)
+diarization_data = {}
 
 for idx, audio_path in enumerate(wav_files, 1):
     rel_path = audio_path.relative_to(DST)
@@ -260,7 +280,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                 diarization.append((segment, "SPEAKER_00"))
         
         file_segments = []
-        speaker_embeddings = defaultdict(list)
         file_speakers = set()
         
         for segment in diarization.itertracks(yield_label=True):
@@ -324,14 +343,8 @@ for idx, audio_path in enumerate(wav_files, 1):
                     if embedding.ndim > 1:
                         embedding = np.mean(embedding, axis=0)
                     
-                    if embedding_dim is None:
-                        embedding_dim = embedding.shape[0]
-                    
-                    if embedding.shape[0] != embedding_dim:
-                        print(f"    ⚠️ Неправильная размерность эмбеддинга: {embedding.shape} (ожидалось {embedding_dim}), пропускаем")
-                        continue
-                    
-                    speaker_embeddings[speaker].append(embedding)
+                    # Сохраняем эмбеддинг для каждого сегмента
+                    file_speaker_embeddings[(audio_path.name, speaker)].append(embedding)
                 except Exception as e:
                     tb = traceback.extract_tb(e.__traceback__)[0]
                     print(f"    ⚠️ Ошибка при обработке сегмента: {e}, файл {__file__}, строка {tb.lineno}")
@@ -339,141 +352,12 @@ for idx, audio_path in enumerate(wav_files, 1):
         
         diarization_data[audio_path] = file_segments
         file_to_speakers[audio_path.name] = file_speakers
-        
-        # Сохраняем усредненные эмбеддинги для каждого спикера
-        for speaker, embeddings_list in speaker_embeddings.items():
-            if embeddings_list:
-                dims = [e.shape[0] for e in embeddings_list]
-                if len(set(dims)) > 1:
-                    print(f"    ⚠️ Разные размерности эмбеддингов для спикера {speaker}: {dims}")
-                    continue
-                
-                avg_embedding = np.mean(embeddings_list, axis=0)
-                avg_embedding = l2_normalize(avg_embedding).flatten()
-                
-                # Сохраняем для каждого спикера в файле
-                file_speaker_avg_embeddings[(audio_path.name, speaker)] = avg_embedding
-                
-                all_embeddings.append(avg_embedding)
-                all_file_names.append(audio_path.name)
-                all_speaker_keys.append(speaker)
             
     except Exception as e:
         tb = traceback.extract_tb(e.__traceback__)[0]
         print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}")
 
-if not all_embeddings:
-    print("⚠️ Не удалось извлечь эмбеддинги, выход")
-    exit(1)
-
-print(f"🔮 Извлечено эмбеддингов: {len(all_embeddings)}")
-
-emb_dims = [e.shape[0] for e in all_embeddings] if all_embeddings[0].ndim == 1 else [e.size for e in all_embeddings]
-if len(set(emb_dims)) > 1:
-    print(f"⚠️ Обнаружены эмбеддинги разной размерности: {set(emb_dims)}")
-    dim_counts = {dim: emb_dims.count(dim) for dim in set(emb_dims)}
-    common_dim = max(dim_counts, key=dim_counts.get)
-    filtered_embeddings = [e for e in all_embeddings if (e.shape[0] if e.ndim == 1 else e.size) == common_dim]
-    print(f"🔮 Оставляем {len(filtered_embeddings)}/{len(all_embeddings)} эмбеддингов размерностью {common_dim}")
-    all_embeddings = filtered_embeddings
-
-if len(all_embeddings) < 2:
-    print("⚠️ Недостаточно эмбеддингов для кластеризации (требуется минимум 2)")
-    exit(1)
-
-print("🔮 Кластеризация спикеров...")
-embeddings_array = np.array(all_embeddings)
-
-pca = PCA(n_components=min(50, len(embeddings_array)-1))
-embeddings_reduced = pca.fit_transform(embeddings_array)
-
-kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
-labels = kmeans.labels_
-
-# Определение основного кластера "я" по охвату файлов
-print("🔮 Определение основного кластера 'я'...")
-cluster_files = {0: set(), 1: set()}
-for i in range(len(all_embeddings)):
-    file_name = all_file_names[i]
-    cluster_id = labels[i]
-    cluster_files[cluster_id].add(file_name)
-
-file_counts = {0: len(cluster_files[0]), 1: len(cluster_files[1])}
-print(f"🔮 Файлов в кластере 0: {file_counts[0]}, в кластере 1: {file_counts[1]}")
-
-if file_counts[0] >= file_counts[1]:
-    main_cluster = 0
-    print(f"🔮 Основной кластер 0 (охват: {file_counts[0]}/{len(wav_files)} файлов)")
-else:
-    main_cluster = 1
-    print(f"🔮 Основной кластер 1 (охват: {file_counts[1]}/{len(wav_files)} файлов)")
-
-# Точное определение ролей через расстояния до центроидов
-print("🔮 Точное определение ролей через расстояния до центроидов...")
-centroid_0 = kmeans.cluster_centers_[0]
-centroid_1 = kmeans.cluster_centers_[1]
-
-speaker_roles = {}
-for (file_name, speaker), embedding in file_speaker_avg_embeddings.items():
-    # Преобразуем эмбеддинг в PCA-пространство
-    emb_pca = pca.transform(embedding.reshape(1, -1))[0]
-    
-    # Вычисляем расстояния до центроидов
-    dist_to_0 = np.linalg.norm(emb_pca - centroid_0)
-    dist_to_1 = np.linalg.norm(emb_pca - centroid_1)
-    
-    # Определяем принадлежность к основному кластеру
-    if main_cluster == 0:
-        is_you = dist_to_0 < dist_to_1
-    else:
-        is_you = dist_to_1 < dist_to_0
-    
-    speaker_roles[(file_name, speaker)] = is_you
-    print(f"  🎯 {file_name}:{speaker} -> {'я' if is_you else 'собеседник'} "
-          f"(d0={dist_to_0:.2f}, d1={dist_to_1:.2f})")
-
-# Проверка качества диаризации
-for audio_path in wav_files:
-    if audio_path.name not in file_to_speakers: 
-        continue
-        
-    speakers = file_to_speakers[audio_path.name]
-    if len(speakers) < 2: 
-        continue
-        
-    embeddings = []
-    for speaker in speakers:
-        emb = file_speaker_avg_embeddings.get((audio_path.name, speaker))
-        if emb is not None:
-            embeddings.append(emb)
-    
-    if len(embeddings) >= 2:
-        avg_sim = average_pairwise_similarity(embeddings)
-        # Более чувствительный порог для похожих голосов
-        if avg_sim > 0.75:
-            print(f"⚠️ Внимание! В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f}).")
-
-# === Коррекция ролей с использованием известных собеседников ===
-print("🔧 Коррекция ролей с использованием известных собеседников...")
-for audio_path in wav_files:
-    file_name = audio_path.name
-    caller_id = extract_phone_number(str(audio_path.relative_to(DST)))
-    
-    if caller_id and caller_id in known_caller_ids:
-        known_emb = known_caller_ids[caller_id]
-        speakers = file_to_speakers.get(file_name, set())
-        
-        for speaker in speakers:
-            key = (file_name, speaker)
-            if key in file_speaker_avg_embeddings:
-                current_emb = file_speaker_avg_embeddings[key]
-                similarity = 1 - cosine(current_emb, known_emb)
-                
-                if similarity > 0.7:  # Высокое сходство
-                    speaker_roles[key] = False  # Помечаем как собеседника
-                    print(f"  🔧 {file_name}:{speaker} -> собеседник (сходство: {similarity:.2f})")
-
-# === Второй проход: транскрипция ===
+# === Второй проход: транскрипция и определение спикеров ===
 print("🔍 Второй проход: транскрипция и формирование JSON...")
 processed_files = 0
 
@@ -495,16 +379,84 @@ for idx, audio_path in enumerate(wav_files, 1):
         file_segments = diarization_data[audio_path]
         caller_id = extract_phone_number(str(rel_path)) or "caller"
         
+        # Собираем все эмбеддинги для этого файла
+        speaker_embeddings = {}
+        for speaker in file_to_speakers[audio_path.name]:
+            embeddings_list = file_speaker_embeddings.get((audio_path.name, speaker), [])
+            if embeddings_list:
+                # Усредняем эмбеддинги для каждого спикера
+                avg_embedding = np.mean(embeddings_list, axis=0)
+                speaker_embeddings[speaker] = avg_embedding
+        
         diarization_segments = []
+        you_detected = False
+        
         for start, end, speaker in file_segments:
-            is_you = speaker_roles.get((audio_path.name, speaker), False)
+            # Получаем эмбеддинг для текущего спикера
+            current_embedding = speaker_embeddings.get(speaker)
+            
+            # Инициализация флага
+            is_you = False
+            
+            # Если есть эталонный эмбеддинг "я"
+            if you_embedding is not None and current_embedding is not None:
+                # Вычисляем косинусное сходство
+                similarity = 1 - cosine(you_embedding, current_embedding)
+                
+                # Определяем порог динамически
+                threshold = 0.75  # Базовый порог
+                
+                # Если сходство высокое, помечаем как "я"
+                if similarity > threshold:
+                    is_you = True
+                    you_detected = True
+                    print(f"  🎯 Сходство с 'я': {similarity:.2f} (порог: {threshold:.2f})")
+            
+            # Если "я" еще не определено, но есть эмбеддинг
+            elif current_embedding is not None:
+                # Если это первый файл, инициализируем эталон
+                if you_embedding is None:
+                    you_embedding = current_embedding
+                    is_you = True
+                    you_detected = True
+                    print("  🎯 Инициализация эталонного эмбеддинга 'я'")
+            
+            # Проверка на системный голос
+            if current_embedding is not None and is_system_voice(current_embedding):
+                is_you = False
+                print(f"  🤖 Обнаружен системный голос: {speaker}")
+            
             diarization_segments.append({
                 "start": start,
                 "end": end,
                 "speaker": speaker,
                 "is_you": is_you,
-                "text": ""  # Будем добавлять целые сегменты
+                "text": ""
             })
+        
+        # Обновление эталонного эмбеддинга "я"
+        if you_detected:
+            # Находим лучший эмбеддинг "я" в этом файле
+            best_you_embedding = None
+            max_similarity = -1
+            
+            for speaker, embedding in speaker_embeddings.items():
+                if embedding is not None and any(seg["is_you"] and seg["speaker"] == speaker for seg in diarization_segments):
+                    if you_embedding is not None:
+                        similarity = 1 - cosine(you_embedding, embedding)
+                        if similarity > max_similarity:
+                            max_similarity = similarity
+                            best_you_embedding = embedding
+            
+            # Если нашли подходящий эмбеддинг, обновляем эталон
+            if best_you_embedding is not None:
+                # Взвешенное обновление (80% старый + 20% новый)
+                if you_embedding is None:
+                    you_embedding = best_you_embedding
+                else:
+                    you_embedding = 0.8 * you_embedding + 0.2 * best_you_embedding
+                save_you_embedding()
+                print(f"  🔄 Обновлен эталонный эмбеддинг 'я'")
         
         vad_options = VadOptions(
             onset=0.35,
@@ -512,17 +464,17 @@ for idx, audio_path in enumerate(wav_files, 1):
             min_speech_duration_ms=150
         )
         
-        # Транскрипция целыми сегментами (без разбивки на слова)
+        # Транскрипция целыми сегментами
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=False,  # Отключаем поразбивку на слова
+            word_timestamps=False,
             vad_parameters=vad_options
         )
         
-        # Собираем сегменты транскрипции целиком
+        # Собираем сегменты транскрипции
         whisper_segments = []
         for segment in segments:
             whisper_segments.append({
@@ -533,7 +485,6 @@ for idx, audio_path in enumerate(wav_files, 1):
         print(f"  🔠 Распознано сегментов: {len(whisper_segments)}")
         
         # Распределяем целые сегменты транскрипции по сегментам диаризации
-        unassigned_segments = []
         for seg_trans in whisper_segments:
             best_overlap = 0
             best_seg = None
@@ -558,105 +509,35 @@ for idx, audio_path in enumerate(wav_files, 1):
                     best_seg["text"] += " " + seg_trans["text"]
                 else:
                     best_seg["text"] = seg_trans["text"]
-            else:
-                unassigned_segments.append(seg_trans)
-        
-        # Восстановление пропущенных сегментов с умным распределением
-        if unassigned_segments:
-            print(f"  🔄 Восстановление {len(unassigned_segments)} пропущенных сегментов")
-            for seg_trans in unassigned_segments:
-                # Находим ближайший сегмент диаризации по времени
-                closest_seg = None
-                min_distance = float('inf')
-                
-                for d_seg in diarization_segments:
-                    # Вычисляем минимальное расстояние между сегментами
-                    distance = min(
-                        abs(seg_trans["start"] - d_seg["end"]),
-                        abs(seg_trans["end"] - d_seg["start"])
-                    )
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_seg = d_seg
-                
-                if closest_seg and min_distance < 2.0:  # Максимальное расстояние 2 секунды
-                    # Создаем новый сегмент с теми же параметрами спикера
-                    new_seg = {
-                        "start": seg_trans["start"],
-                        "end": seg_trans["end"],
-                        "speaker": closest_seg["speaker"],
-                        "is_you": closest_seg["is_you"],
-                        "text": seg_trans["text"]
-                    }
-                    diarization_segments.append(new_seg)
-                else:
-                    print(f"    ⚠️ Не удалось привязать сегмент: {seg_trans['text'][:50]}...")
         
         # Фильтруем пустые сегменты
         diarization_segments = [s for s in diarization_segments if s["text"].strip()]
         
-        # Обнаружение и обработка третьего спикера (робота)
-        if len(file_to_speakers[audio_path.name]) >= 3:
-            speaker_durations = defaultdict(float)
-            for seg in diarization_segments:
-                speaker = seg["speaker"]
-                duration = seg["end"] - seg["start"]
-                speaker_durations[speaker] += duration
-            
-            total_duration = sum(speaker_durations.values())
-            if total_duration > 0:
-                # Находим спикера с наименьшей длительностью
-                min_speaker = min(speaker_durations, key=speaker_durations.get)
-                min_duration = speaker_durations[min_speaker]
-                
-                # Если спикер говорит менее 10% от общего времени, игнорируем его
-                if min_duration < total_duration * 0.1:
-                    print(f"  🤖 Обнаружен малозначимый спикер: {min_speaker} (доля: {min_duration/total_duration:.2f})")
-                    
-                    # Перераспределяем сегменты к ближайшему основному спикеру
-                    for seg in diarization_segments:
-                        if seg["speaker"] == min_speaker:
-                            # Находим ближайший по времени сегмент
-                            closest_seg = None
-                            min_distance = float('inf')
-                            for other_seg in diarization_segments:
-                                if other_seg["speaker"] != min_speaker:
-                                    distance = min(
-                                        abs(seg["start"] - other_seg["end"]),
-                                        abs(seg["end"] - other_seg["start"])
-                                    )
-                                    if distance < min_distance:
-                                        min_distance = distance
-                                        closest_seg = other_seg
-                            
-                            if closest_seg:
-                                seg["speaker"] = closest_seg["speaker"]
-                                seg["is_you"] = closest_seg["is_you"]
+        # Обнаружение системных сообщений по тексту
+        robotic_phrases = [
+            "звониваться", "оставайтесь на линии", "ожидайте", "соединяем",
+            "пожалуйста не вешайте трубку", "добро пожаловать", "ваш звонок очень важен"
+        ]
+        
+        for seg in diarization_segments:
+            if any(phrase in seg["text"].lower() for phrase in robotic_phrases):
+                seg["is_you"] = False
+                # Сохраняем эмбеддинг для будущего использования
+                speaker_embed = speaker_embeddings.get(seg["speaker"])
+                if speaker_embed is not None:
+                    system_voices.append(speaker_embed)
+                    print(f"  🤖 Обнаружено системное сообщение: {seg['text'][:50]}...")
         
         # Объединяем короткие сегменты
         enriched_segments = merge_short_segments(diarization_segments)
         
-        # Проверка на ошибки диаризации
-        unique_speakers = len(set(seg["is_you"] for seg in enriched_segments))
-        num_speakers_diarized = len(file_to_speakers.get(audio_path.name, set()))
-        
-        # Принудительное разделение при подозрении на ошибку
-        if unique_speakers == 1 and num_speakers_diarized > 1:
-            print(f"  ⚠️ Принудительное разделение спикеров (диаризация: {num_speakers_diarized}, результат: {unique_speakers})")
-            # Разделяем сегменты на 2 группы по времени
-            mid_point = get_audio_duration(audio_path) / 2
-            for seg in enriched_segments:
-                seg["is_you"] = seg["start"] < mid_point
-        
         # Обновляем эмбеддинги собеседника
         if caller_id != "caller" and any(not seg["is_you"] for seg in enriched_segments):
             caller_embeddings = []
-            for speaker in file_to_speakers[audio_path.name]:
-                if not speaker_roles.get((audio_path.name, speaker), True):
-                    emb = file_speaker_avg_embeddings.get((audio_path.name, speaker))
-                    if emb is not None:
-                        caller_embeddings.append(emb)
+            for speaker, embeddings_list in file_speaker_embeddings.items():
+                if speaker[0] == audio_path.name:
+                    if not any(seg["is_you"] for seg in enriched_segments if seg["speaker"] == speaker[1]):
+                        caller_embeddings.extend(embeddings_list)
             
             if caller_embeddings:
                 avg_embedding = np.mean(caller_embeddings, axis=0)
@@ -680,7 +561,9 @@ for idx, audio_path in enumerate(wav_files, 1):
         print(f"  ❌ Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}")
 
 save_known_callers()
-print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников")
+save_system_voices()
+save_you_embedding()
+print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников, {len(system_voices)} системных голосов и эталон 'я'")
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
