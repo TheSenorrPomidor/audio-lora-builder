@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.77 (Final Diarization Fix)")
+print("\n🔢 Версия скрипта process_audio.py 2.78 (Optimized Phrase Alignment)")
 
 import os
 import shutil
@@ -512,55 +512,28 @@ for idx, audio_path in enumerate(wav_files, 1):
             min_speech_duration_ms=150
         )
         
-        # Транскрипция с включенными временными метками слов
+        # Транскрипция целыми сегментами (без разбивки на слова)
         segments, info = whisper_model.transcribe(
             str(audio_path),
             language="ru",
             beam_size=5,
             vad_filter=True,
-            word_timestamps=True,
+            word_timestamps=False,  # Отключаем поразбивку на слова
             vad_parameters=vad_options
         )
         
-        # Собираем все слова для точного восстановления
-        all_words = []
-        for segment in segments:
-            for word in segment.words:
-                all_words.append({
-                    "text": word.word,
-                    "start": word.start,
-                    "end": word.end
-                })
-        
         # Собираем сегменты транскрипции целиком
         whisper_segments = []
-        current_segment = None
-        for word in all_words:
-            if current_segment is None:
-                current_segment = {
-                    "start": word["start"],
-                    "end": word["end"],
-                    "text": word["text"]
-                }
-            else:
-                # Объединяем слова в сегменты, если они близки по времени
-                if word["start"] - current_segment["end"] < 0.5:  # Менее 0.5 сек между словами
-                    current_segment["end"] = word["end"]
-                    current_segment["text"] += " " + word["text"]
-                else:
-                    whisper_segments.append(current_segment)
-                    current_segment = {
-                        "start": word["start"],
-                        "end": word["end"],
-                        "text": word["text"]
-                    }
-        
-        if current_segment:
-            whisper_segments.append(current_segment)
-        
+        for segment in segments:
+            whisper_segments.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text.strip()
+            })
         print(f"  🔠 Распознано сегментов: {len(whisper_segments)}")
         
         # Распределяем целые сегменты транскрипции по сегментам диаризации
+        unassigned_segments = []
         for seg_trans in whisper_segments:
             best_overlap = 0
             best_seg = None
@@ -585,47 +558,81 @@ for idx, audio_path in enumerate(wav_files, 1):
                     best_seg["text"] += " " + seg_trans["text"]
                 else:
                     best_seg["text"] = seg_trans["text"]
+            else:
+                unassigned_segments.append(seg_trans)
+        
+        # Восстановление пропущенных сегментов с умным распределением
+        if unassigned_segments:
+            print(f"  🔄 Восстановление {len(unassigned_segments)} пропущенных сегментов")
+            for seg_trans in unassigned_segments:
+                # Находим ближайший сегмент диаризации по времени
+                closest_seg = None
+                min_distance = float('inf')
+                
+                for d_seg in diarization_segments:
+                    # Вычисляем минимальное расстояние между сегментами
+                    distance = min(
+                        abs(seg_trans["start"] - d_seg["end"]),
+                        abs(seg_trans["end"] - d_seg["start"])
+                    )
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_seg = d_seg
+                
+                if closest_seg and min_distance < 2.0:  # Максимальное расстояние 2 секунды
+                    # Создаем новый сегмент с теми же параметрами спикера
+                    new_seg = {
+                        "start": seg_trans["start"],
+                        "end": seg_trans["end"],
+                        "speaker": closest_seg["speaker"],
+                        "is_you": closest_seg["is_you"],
+                        "text": seg_trans["text"]
+                    }
+                    diarization_segments.append(new_seg)
+                else:
+                    print(f"    ⚠️ Не удалось привязать сегмент: {seg_trans['text'][:50]}...")
         
         # Фильтруем пустые сегменты
         diarization_segments = [s for s in diarization_segments if s["text"].strip()]
         
         # Обнаружение и обработка третьего спикера (робота)
-        speaker_durations = defaultdict(float)
-        for seg in diarization_segments:
-            speaker = seg["speaker"]
-            duration = seg["end"] - seg["start"]
-            speaker_durations[speaker] += duration
-        
-        total_duration = sum(speaker_durations.values())
-        if len(speaker_durations) >= 3:
-            # Находим спикера с наименьшей длительностью
-            min_speaker = min(speaker_durations, key=speaker_durations.get)
-            min_duration = speaker_durations[min_speaker]
+        if len(file_to_speakers[audio_path.name]) >= 3:
+            speaker_durations = defaultdict(float)
+            for seg in diarization_segments:
+                speaker = seg["speaker"]
+                duration = seg["end"] - seg["start"]
+                speaker_durations[speaker] += duration
             
-            # Если спикер говорит менее 10% от общего времени, игнорируем его
-            if min_duration < total_duration * 0.1:
-                print(f"  🤖 Обнаружен малозначимый спикер: {min_speaker} (доля: {min_duration/total_duration:.2f})")
+            total_duration = sum(speaker_durations.values())
+            if total_duration > 0:
+                # Находим спикера с наименьшей длительностью
+                min_speaker = min(speaker_durations, key=speaker_durations.get)
+                min_duration = speaker_durations[min_speaker]
                 
-                # Перераспределяем сегменты к ближайшему основному спикеру
-                main_speakers = [spk for spk in speaker_durations.keys() if spk != min_speaker]
-                for seg in diarization_segments:
-                    if seg["speaker"] == min_speaker:
-                        # Находим ближайший по времени сегмент из основных спикеров
-                        closest_seg = None
-                        min_distance = float('inf')
-                        for other_seg in diarization_segments:
-                            if other_seg["speaker"] in main_speakers:
-                                distance = min(
-                                    abs(seg["start"] - other_seg["end"]),
-                                    abs(seg["end"] - other_seg["start"])
-                                )
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    closest_seg = other_seg
-                        
-                        if closest_seg:
-                            seg["speaker"] = closest_seg["speaker"]
-                            seg["is_you"] = closest_seg["is_you"]
+                # Если спикер говорит менее 10% от общего времени, игнорируем его
+                if min_duration < total_duration * 0.1:
+                    print(f"  🤖 Обнаружен малозначимый спикер: {min_speaker} (доля: {min_duration/total_duration:.2f})")
+                    
+                    # Перераспределяем сегменты к ближайшему основному спикеру
+                    for seg in diarization_segments:
+                        if seg["speaker"] == min_speaker:
+                            # Находим ближайший по времени сегмент
+                            closest_seg = None
+                            min_distance = float('inf')
+                            for other_seg in diarization_segments:
+                                if other_seg["speaker"] != min_speaker:
+                                    distance = min(
+                                        abs(seg["start"] - other_seg["end"]),
+                                        abs(seg["end"] - other_seg["start"])
+                                    )
+                                    if distance < min_distance:
+                                        min_distance = distance
+                                        closest_seg = other_seg
+                            
+                            if closest_seg:
+                                seg["speaker"] = closest_seg["speaker"]
+                                seg["is_you"] = closest_seg["is_you"]
         
         # Объединяем короткие сегменты
         enriched_segments = merge_short_segments(diarization_segments)
