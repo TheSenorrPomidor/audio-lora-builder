@@ -12,7 +12,7 @@ SIMILARITY_THRESHOLD = 0.75       # Порог косинусного сходс
                                    # - Ниже значение = более агрессивная группировка (риск объединения разных спикеров)
                                    # Оптимальный диапазон: 0.7-0.8
 
-MIN_SPEAKER_DURATION = 0.2         # Минимальная длительность сегмента речи для обработки (в секундах)
+MIN_SPEAKER_DURATION = 0.15        # Минимальная длительность сегмента речи для обработки (в секундах)
                                    # - Отсекает короткие паузы, кашель, случайные звуки
                                    # - Слишком высокое значение может пропустить короткие реплики
                                    # - Слишком низкое может добавить шум в анализ
@@ -23,16 +23,19 @@ MAIN_CLUSTER_BIAS = 0.05           # Смещение в пользу опред
                                    # - Помогает когда голоса очень похожи или запись некачественная
 
 # === Параметры VAD (Voice Activity Detection) ===
-VAD_ONSET = 0.35                   # Порог начала речевого сегмента (0.0-1.0)
-                                   # - Ниже значение = более чувствительное определение начала речи
-                                   # - Выше значение = меньше ложных срабатываний
+VAD_ONSET = 0.35                   # Порог активации речи (типичный диапазон: 0.3-0.5)
+                                   # - НИЖЕ значение = более чувствительное обнаружение (больше ложных срабатываний)
+                                   # - ВЫШЕ значение = более консервативное обнаружение (может пропустить тихую речь)
+                                   # Практический диапазон: 0.3-0.5 (не 0.0-1.0)
 
-VAD_OFFSET = 0.35                  # Порог окончания речевого сегмента (0.0-1.0)
-                                   # - Аналогично VAD_ONSET, но для конца речевого сегмента
+VAD_OFFSET = 0.35                  # Порог деактивации речи (типичный диапазон: 0.3-0.5)
+                                   # - Определяет когда речь считается закончившейся
+                                   # - Обычно устанавливается равным VAD_ONSET
+                                   # Практический диапазон: 0.3-0.5 (не 0.0-1.0)
 
 MIN_SPEECH_DURATION_MS = 150       # Минимальная длительность речевого сегмента (в миллисекундах)
                                    # - Сегменты короче этой длительности игнорируются
-                                   # - Помогает отфильтровать короткие выдохи и артефакты
+                                   # - Помогает отфильтровать короткие выдохи, щелчки и артефакты
 
 # === Параметры транскрипции ===
 WHISPER_BEAM_SIZE = 6              # Качество распознавания речи (целое число, обычно 1-10)
@@ -55,7 +58,7 @@ MERGE_MIN_DURATION = 0.4           # Минимальная длительнос
                                    # - Короткие сегменты короче этой длительности будут объединяться
                                    # с соседними сегментами того же спикера
 
-MERGE_MAX_GAP = 0.4                # Максимальный временной разрыв между сегментами для объединения (в секундах)
+MERGE_MAX_GAP = 0.6                # Максимальный временной разрыв между сегментами для объединения (в секундах)
                                    # - Определяет, насколько большим может быть молчание между репликами одного спикера,
                                    #   чтобы эти реплики все еще считались частью одной непрерывной речи
                                    # - Сегменты одного спикера с паузой меньше этого значения будут объединены
@@ -118,11 +121,12 @@ from pyannote.audio import Inference
 from pyannote.core import SlidingWindowFeature
 
 # === 0. Функции ===
-def write_json(segments, json_path, rel_path, you_id, caller_id):
+def write_json(segments, json_path, rel_path, you_id, caller_id, warnings=None):
     json_path.parent.mkdir(parents=True, exist_ok=True)
     
     data = {
         "file": str(rel_path),
+        "warnings": warnings or [],
         "segments": []
     }
     
@@ -202,9 +206,60 @@ def merge_short_segments(segments, min_duration=MERGE_MIN_DURATION, max_gap=MERG
     merged.append(current)
     return merged
 
+def combine_all_json_files(output_dir, final_output_path):
+    """Объединяет все JSON файлы в один итоговый файл для обучения LORA"""
+    all_segments = []
+    all_warnings = []  # Собираем все предупреждения
+    
+    # Рекурсивно ищем все JSON файлы
+    json_files = list(output_dir.rglob("*.json"))
+    
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # Добавляем информацию о файле к каждому сегменту
+            for segment in data.get("segments", []):
+                segment_with_meta = segment.copy()
+                segment_with_meta["source_file"] = data["file"]
+                all_segments.append(segment_with_meta)
+            
+            # Добавляем предупреждения из файла
+            if "warnings" in data and data["warnings"]:
+                all_warnings.extend(data["warnings"])
+                
+        except Exception as e:
+            warning_msg = f"Ошибка при чтении {json_file}: {e}"
+            print(f"⚠️ {warning_msg}")
+            all_warnings.append(warning_msg)
+    
+    # Сортируем сегменты по имени файла и времени начала
+    all_segments.sort(key=lambda x: (x["source_file"], x["start"]))
+    
+    # Формируем финальную структуру
+    combined_data = {
+        "version": "2.90",
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "total_segments": len(all_segments),
+        "total_warnings": len(all_warnings),
+        "warnings": all_warnings,
+        "segments": all_segments
+    }
+    
+    # Сохраняем объединенный файл
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_output_path, 'w', encoding='utf-8') as f:
+        json.dump(combined_data, f, ensure_ascii=False, indent=2)
+    
+    return len(all_segments), len(all_warnings)
+
 # === Глобальный словарь известных собеседников ===
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
 known_caller_ids = {}  # caller_id -> embedding
+
+# === Глобальный словарь для предупреждений ===
+file_warnings = defaultdict(list)  # file_name -> list of warnings
 
 if KNOWN_CALLERS_FILE.exists():
     try:
@@ -386,7 +441,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                         if max_val > 0:
                             waveform = waveform / max_val
                     except Exception as e:
-                        tb = traceback.extract_tb(e.__trace_back__)[0]
+                        tb = traceback.extract_tb(e.__traceback__)[0]
                         print(f"    ⚠️ Ошибка нормализации: {e}, файл {__file__}, строка {tb.lineno}")
                         continue
                     
@@ -449,7 +504,9 @@ for idx, audio_path in enumerate(wav_files, 1):
             
     except Exception as e:
         tb = traceback.extract_tb(e.__traceback__)[0]
-        print(f"  ❌ Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}")
+        error_msg = f"Ошибка при извлечении эмбеддингов: {e}, файл {__file__}, строка {tb.lineno}"
+        print(f"  ❌ {error_msg}")
+        file_warnings[audio_path.name].append(error_msg)
 
 if not all_embeddings:
     print("⚠️ Не удалось извлечь эмбеддинги, выход")
@@ -541,7 +598,9 @@ for audio_path in wav_files:
         avg_sim = average_pairwise_similarity(embeddings)
         # Более чувствительный порог для похожих голосов
         if avg_sim > SIMILARITY_THRESHOLD:
-            print(f"⚠️ Внимание! В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f}).")
+            warning_msg = f"В файле {audio_path.name} голоса слишком похожи (сходство: {avg_sim:.2f})."
+            print(f"⚠️ {warning_msg}")
+            file_warnings[audio_path.name].append(warning_msg)
 
 # === Второй проход: транскрипция ===
 print("🔍 Второй проход: транскрипция и формирование JSON...")
@@ -556,7 +615,9 @@ for idx, audio_path in enumerate(wav_files, 1):
         continue
         
     if audio_path not in diarization_data:
-        print(f"  ⚠️ ({idx}/{len(wav_files)}) Пропуск (нет данных диаризации): {rel_path}")
+        warning_msg = f"Пропуск (нет данных диаризации): {rel_path}"
+        print(f"  ⚠️ ({idx}/{len(wav_files)}) {warning_msg}")
+        file_warnings[audio_path.name].append(warning_msg)
         continue
         
     print(f"\n📝 ({idx}/{len(wav_files)}) {rel_path}")
@@ -658,13 +719,25 @@ for idx, audio_path in enumerate(wav_files, 1):
         
         caller_id = caller_id or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        write_json(enriched_segments, output_path, rel_path, "0000000000000", caller_id)
+        
+        # Добавляем предупреждения для этого файла в JSON
+        warnings = file_warnings.get(audio_path.name, [])
+        write_json(enriched_segments, output_path, rel_path, "0000000000000", caller_id, warnings)
         print(f"  💾 Сохранено сегментов: {len(enriched_segments)} → {output_path}")
         processed_files += 1
         
     except Exception as e:
         tb = traceback.extract_tb(e.__traceback__)[0]
-        print(f"  ❌ Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}")
+        error_msg = f"Ошибка при обработке файла: {e}, файл {__file__}, строка {tb.lineno}"
+        print(f"  ❌ {error_msg}")
+        file_warnings[audio_path.name].append(error_msg)
+
+# === Объединение всех JSON файлов в один ===
+print("\n4. 📦 Объединение всех JSON файлов в один...")
+FINAL_OUTPUT_PATH = OUTPUT_DIR / "all_data.json"
+
+total_segments, total_warnings = combine_all_json_files(OUTPUT_DIR, FINAL_OUTPUT_PATH)
+print(f"✅ Объединено сегментов: {total_segments}, предупреждений: {total_warnings} → {FINAL_OUTPUT_PATH}")
 
 save_known_callers()
 print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников")
