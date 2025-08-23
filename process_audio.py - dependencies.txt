@@ -1,5 +1,8 @@
 Требуемые зависимости для process_audio.py:
 
+=== Ресурсы ПК ===
+Nvidia 3080 RTX 10GB VRAM, i5 8600K, 64 GB of RAM
+
 === Системные пакеты (deb) ===
 python3-pip
 ffmpeg
