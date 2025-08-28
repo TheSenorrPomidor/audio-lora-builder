@@ -235,6 +235,7 @@ else {
 			# Получаем путь для установки
 			$InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
 			wsl --import $DistroName $InstallDistroDir $ImportRootfs --version 2
+			exit 0
 		}
 		default {
 			Write-Host "Неверный выбор, завершение скрипта"
