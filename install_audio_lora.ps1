@@ -107,7 +107,7 @@ function Get-HuggingFaceToken {
     }
     return (Get-Content $TokenPath -Raw).Trim()
 }
-# === Функция для получения списка дисков ===
+# === Функция для выбора пути установки (монтирования) дистро===
 function Get-InstallDistroDir {
     param(
         [string]$DefaultDir
@@ -131,7 +131,7 @@ function Get-InstallDistroDir {
     foreach ($drive in $drives) {
         $freeSpaceGB = [math]::Round($drive.Free / 1GB, 2)
         # Формируем путь: буква диска + относительный путь
-        $path = $drive.Root.TrimEnd('\') + $relativePath
+        $path = Join-Path -Path $drive.Root -ChildPath $relativePath
         $options += @{
             Number = $i
             Description = "$($drive.Name): Свободно ${freeSpaceGB}GB"
@@ -221,8 +221,8 @@ else {
 	Write-Host "1. Установка distro из rootfs"
 	Write-Host "2. Только развертывание distro из rootfs"
 	$choice = $null
-	while ($choice -notin @('1', '2', '3', '4', '5')) {
-		$choice = Read-Host "Введите номер варианта (1-5)"
+	while ($choice -notin @('1', '2')) {
+		$choice = Read-Host "Введите номер варианта (1-2)"
 	}
 	switch ($choice) {
 		'1' {
@@ -234,7 +234,7 @@ else {
 			Write-Host "⏩ Продолжаем использование существующего дистрибутива..."
 			# Получаем путь для установки
 			$InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
-			wsl --import $DistroName $InstallDistroDir $ImportRootfs --version 2
+			wsl --import $DistroName $InstallDistroDir $FinalRootfs --version 2
 			exit 0
 		}
 		default {
