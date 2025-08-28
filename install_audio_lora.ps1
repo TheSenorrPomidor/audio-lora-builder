@@ -536,7 +536,6 @@ if ($PyWheelsMissing.Count -gt 0) {
 	$PyWheelsToDownload = @()
 	$WhlCache = Get-WhlInventory -WhlDir $PipCacheWin -DistroName $DistroName
 
-
 	foreach ($pkg in $PyWheelsMissing) {
 		$match = $WhlCache | Where-Object { "$($_['Name'])==$($_['Version'])" -eq $pkg.Name.ToLower() }
 		if (-not $match) {
@@ -547,10 +546,6 @@ if ($PyWheelsMissing.Count -gt 0) {
 		}
 	}
 
-
-
-
-
 	#Устанавливаем uv
 	$UvWheel = Get-ChildItem $PipCacheWin -Filter "uv-*.whl" | Select-Object -First 1
 	if (-not $UvWheel) {
@@ -558,30 +553,19 @@ if ($PyWheelsMissing.Count -gt 0) {
 		$UvWheel = Get-ChildItem $PipCacheWin -Filter "uv-*.whl" | Select-Object -First 1
 	}
 	wsl -d $DistroName -- bash -c "pip install '$($PipCacheWsl)/$($UvWheel.Name)' --no-index --find-links='$PipCacheWsl' > /dev/null 2>&1"
-
-
-
-
 	
 	@("torch", "pypi") | ForEach-Object {
     $group = $_
-
     $inPathWin  = Join-Path $PipCacheWin  "requirements_${group}.in"
     $txtPathWin = Join-Path $PipCacheWin  "requirements_${group}.txt"
     $inPathWsl  = Convert-WindowsPathToWsl $inPathWin
     $txtPathWsl = Convert-WindowsPathToWsl $txtPathWin
 
-    $packages = $PyWheels | Where-Object {
-        $_.Source -eq $group -and $_.Impl -eq $WhisperImpl
-    } | ForEach-Object { $_['Name'] }
-
+	$packages = $PyWheels | Where-Object {
+		$_.Source -eq $group -and ($_.Impl -eq $WhisperImpl -or $_.Impl -eq "all")
+	} | ForEach-Object { $_['Name'] }
     if ($packages.Count -eq 0) { return }
-
     $packages | Set-Content -Encoding UTF8 -Path $inPathWin
-
-
-
-	
 	$toDownload = $PyWheelsToDownload | Where-Object { $_.Source -eq $group }
 	if ((Test-Path $txtPathWin) -and ($toDownload.Count -eq 0)) {
 		Write-Host "`n📄 Все ключевые пакеты WHL по источнику $group скачены и файл requirements_${group}.txt уже есть, Генерация нового requirements_${group}.txt не требуется..."
@@ -602,10 +586,6 @@ if ($PyWheelsMissing.Count -gt 0) {
 		Write-Host "📦 Установка $group-пакетов..."
 		wsl -d $DistroName -- bash -c "pip install --no-index --find-links='$PipCacheWsl' -r '$txtPathWsl'"
 	}
-
-
-
-
 	# Компилируем .tar.gz и .zip → .whl
 	$Archives = Get-ChildItem -Path $PipCacheWin -Include *.tar.gz,*.zip -Recurse
 	foreach ($pkg in $Archives) {
@@ -614,10 +594,8 @@ if ($PyWheelsMissing.Count -gt 0) {
 		wsl -d $DistroName -- bash -c "pip wheel '$pkgPathWsl' --no-deps --wheel-dir '$PipCacheWsl' > /dev/null 2>&1"
 		Remove-Item $pkg.FullName -Force
 	}
-
 	#Удаляем кэш который накопился в WSL
 	wsl -d $DistroName -- bash -c "rm -rf ~/.cache/pip"
-
 	#Проверить установились ли пакеты .whl в WSL после фазы установки пакетов
 	foreach ($pkg in $PyWheels) {
 		$IsForThisImpl = ($pkg.Impl -eq "all" -or $pkg.Impl -eq $WhisperImpl)
@@ -633,13 +611,10 @@ if ($PyWheelsMissing.Count -gt 0) {
 			}
 		}
 	}
-	
-
 }
 else {
 	Write-Host "✅ Все необходимые Python-библиотеки установлены"
 }
-
 
 # === 5.5 Предзагрузка и кэширование модели Whisper large-v3 (faster-whisper) для CPU и GPU ===
 #Определяем переменные для блока
