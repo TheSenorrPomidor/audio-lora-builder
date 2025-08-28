@@ -11,6 +11,8 @@ $FinalRootfs = Join-Path $RootfsDir "audio_lora_rootfs.tar.gz"
 $BaseRootfs = Join-Path $RootfsDir "Ubuntu_2204.1.7.0_x64_rootfs.tar.gz"
 $BundleZipFile = Join-Path $TempDir "Ubuntu2204AppxBundle.zip"
 $BundleExtractPath = Join-Path $TempDir "Ubuntu2204AppxBundle"
+$useExistingDistro = $false
+$InstallDistroDir = "$ScriptDir\$DistroName"
 # Whisper-механизм: faster-whisper или whisperx
 $WhisperImpl = "faster-whisper"
 
@@ -72,11 +74,11 @@ function Get-WhlInventory($WhlDir, $DistroName) {
 	Write-Host "`r📦 Чтение .whl файлов завершено.           "
 
 	return $Inventory.GetEnumerator() | ForEach-Object {
-	@{
-		Name    = ($_).Key -split '==' | Select-Object -First 1
-		Version = ($_).Key -split '==' | Select-Object -Skip 1
-		Path    = ($_).Value
-	}
+		@{
+			Name    = ($_).Key -split '==' | Select-Object -First 1
+			Version = ($_).Key -split '==' | Select-Object -Skip 1
+			Path    = ($_).Value
+		}
 	}
 }
 # === Функция получения/чтения HuggingFaceToken из/в файл huggingface_hub_token.txt ===
@@ -105,88 +107,207 @@ function Get-HuggingFaceToken {
     }
     return (Get-Content $TokenPath -Raw).Trim()
 }
+# === Функция для получения списка дисков ===
+function Get-InstallDistroDir {
+    param(
+        [string]$DefaultDir
+    )
+    
+    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -notin @('A', 'B') }
+    
+    # Получаем относительный путь без буквы диска
+    $rootPath = [System.IO.Path]::GetPathRoot($DefaultDir)
+    $relativePath = $DefaultDir.Substring($rootPath.Length)
+    
+    $options = @(
+        @{ 
+            Number = 1
+            Description = "Стандартный путь ($DefaultDir)"
+            Path = $DefaultDir
+        }
+    )
+    
+    $i = 2
+    foreach ($drive in $drives) {
+        $freeSpaceGB = [math]::Round($drive.Free / 1GB, 2)
+        # Формируем путь: буква диска + относительный путь
+        $path = $drive.Root.TrimEnd('\') + $relativePath
+        $options += @{
+            Number = $i
+            Description = "$($drive.Name): Свободно ${freeSpaceGB}GB"
+            Path = $path
+        }
+        $i++
+    }
+    
+    Write-Host "`n📦 Выберите расположение для установки:"
+    foreach ($option in $options) {
+        Write-Host "$($option.Number)) $($option.Description)"
+    }
+    
+    $choice = Read-Host "Введите номер варианта (1-$($options.Count))"
+    $selectedOption = $options | Where-Object { $_.Number -eq [int]$choice }
+    
+    if ($selectedOption) {
+        return $selectedOption.Path
+    } else {
+        Write-Host "❌ Неверный выбор, используем стандартный путь: $DefaultDir"
+        return $DefaultDir
+    }
+}
 
 
 # === 1. Проверка и удаление WSL-дистрибутива ===
 Write-Host "`n1. 🔍 Проверяем наличие WSL-дистрибутива '$DistroName'..."
+
+
 $existingDistros = wsl --list --quiet
 if ($existingDistros -contains $DistroName) {
-    $response = Read-Host "⚠️ Дистрибутив '$DistroName' уже существует. Удалить его и переустановить? [Y/N]"
-    if ($response -eq "Y") {
-        Write-Host "🧹 Удаляем существующий дистрибутив..."
-		wsl --unregister $DistroName
-    } else {
-        Write-Host "⏭️ Прерываем установку."
-        exit 0
+    Write-Host "⚠️ Дистрибутив '$DistroName' уже существует."
+    Write-Host "Выберите вариант дальнейших действий:"
+    Write-Host "1. Переустановка distro из rootfs"
+    Write-Host "2. Продолжить установку (использовать существующий distro) [skip import/export]"
+    Write-Host "3. Сделать экспорт distro в rootfs и выйти [--export $DistroName $FinalRootfs]"
+    Write-Host "4. Удалить distro и выйти [--unregister $DistroName && exit]"
+    Write-Host "5. Перемонтировать distro [--unregister $DistroName && --import $DistroName rootfs]"
+    
+    $choice = $null
+    while ($choice -notin @('1', '2', '3', '4', '5')) {
+        $choice = Read-Host "Введите номер варианта (1-5)"
+    }
+    
+    switch ($choice) {
+        '1' {
+            Write-Host "🧹 Удаляем существующий дистрибутив..."
+            wsl --unregister $DistroName
+            
+            # Получаем путь для установки
+            $InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
+        }
+        '2' {
+            Write-Host "⏩ Продолжаем использование существующего дистрибутива..."
+            $useExistingDistro = $true
+        }
+        '3' {
+            Write-Host "💾 Экспортируем текущий дистрибутив..."
+            wsl --export $DistroName $FinalRootfs
+            Write-Host "✅ Дистрибутив экспортирован в: $FinalRootfs"
+            exit 0
+        }
+        '4' {
+            Write-Host "🧹 Удаляем дистрибутив и выходим..."
+            wsl --unregister $DistroName
+            exit 0
+        }
+        '5' {
+            Write-Host "Перемонтируем дистрибутив..."
+            wsl --unregister $DistroName
+            
+            # Получаем путь для установки
+            $InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
+            
+            wsl --import $DistroName $InstallDistroDir $FinalRootfs --version 2
+            exit 0
+        }
+		default {
+			Write-Host "Неверный выбор, завершение скрипта"
+			exit 1
+		}
     }
 }
 else {
 	Write-Host "✅ Действующий $DistroName не найден"
+	Write-Host "Выберите вариант дальнейших действий:"
+	Write-Host "1. Установка distro из rootfs"
+	Write-Host "2. Только развертывание distro из rootfs"
+	$choice = $null
+	while ($choice -notin @('1', '2', '3', '4', '5')) {
+		$choice = Read-Host "Введите номер варианта (1-5)"
+	}
+	switch ($choice) {
+		'1' {
+			Write-Host "Установка distro из rootfs"
+			# Получаем путь для установки
+			$InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
+		}
+		'2' {
+			Write-Host "⏩ Продолжаем использование существующего дистрибутива..."
+			# Получаем путь для установки
+			$InstallDistroDir = Get-InstallDistroDir -DefaultDir "$InstallDistroDir"
+			wsl --import $DistroName $InstallDistroDir $ImportRootfs --version 2
+		}
+		default {
+			Write-Host "Неверный выбор, завершение скрипта"
+			exit 1
+		}
+	}
 }
 
 # === 2. Получение rootfs ===
-Write-Host "`n2. 📦 Поиск базового или финального rootfs"
-if (Test-Path $FinalRootfs) {
-    $ImportRootfs = $FinalRootfs
-    Write-Host "✅ Найден финальный rootfs: $FinalRootfs"
-} elseif (Test-Path $BaseRootfs) {
-    $ImportRootfs = $BaseRootfs
-    Write-Host "✅ Найден базовый rootfs: $BaseRootfs"
-} else {
-	
-# === 2.1. Получение базового ubuntu2204_rootfs.tar.gz через распаковку .appx ===
-    Write-Host "`n2.1. 📦️ Базовый и финальный rotfs не найден, качаем appxbundle ..."
+if (-not $useExistingDistro) {
+	Write-Host "`n2. 📦 Поиск базового или финального rootfs"
+	if (Test-Path $FinalRootfs) {
+		$ImportRootfs = $FinalRootfs
+		Write-Host "✅ Найден финальный rootfs: $FinalRootfs"
+	} elseif (Test-Path $BaseRootfs) {
+		$ImportRootfs = $BaseRootfs
+		Write-Host "✅ Найден базовый rootfs: $BaseRootfs"
+	} else {
+		# === 2.1. Получение базового ubuntu2204_rootfs.tar.gz через распаковку .appx ===
+		Write-Host "`n2.1. 📦️ Базовый и финальный rotfs не найден, качаем appxbundle ..."
+		
+		if (-not (Test-Path $BundleZipFile)) {
+			$urlBundle = "https://aka.ms/wslubuntu2204"
+			Write-Host "`n📦 Ищем/Скачиваем архив .appxbundle Ubuntu 22.04 (из $urlBundle в $BundleZipFile)"
+			if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+			Invoke-WebRequest -Uri $urlBundle -OutFile $BundleZipFile -UseBasicParsing
+			Write-Host "✅ Закачка Appxbundle завершена ($BundleZipFile)"
+		} else {
+			Write-Host "📦 Appxbundle уже был ранее скачен ($BundleZipFile)"
+		}
 
-	
-    if (-not (Test-Path $BundleZipFile)) {
-		$urlBundle = "https://aka.ms/wslubuntu2204"
-        Write-Host "`n📦 Ищем/Скачиваем архив .appxbundle Ubuntu 22.04 (из $urlBundle в $BundleZipFile)"
-        if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
-        Invoke-WebRequest -Uri $urlBundle -OutFile $BundleZipFile -UseBasicParsing
-        Write-Host "✅ Закачка Appxbundle завершена ($BundleZipFile)"
-    } else {
-        Write-Host "📦 Appxbundle уже был ранее скачен ($BundleZipFile)"
-    }
+		# 2.2 Распаковка appxbundle
+		Write-Host "`n📦 Распаковываем .appxbundle ($BundleZipFile) для извлечения Ubuntu_2204.1.7.0_x64.appx"
+		try {
+			Expand-Archive -Path $BundleZipFile -DestinationPath $BundleExtractPath -Force
+			Write-Host "✅ Рапаковка .appxbundle завершена."
+		} catch {
+			Write-Host "❌ Ошибка при распаковке .appxbundle: $_"
+			exit 1
+		}
 
-    # 2.2 Распаковка appxbundle
-    Write-Host "`n📦 Распаковываем .appxbundle ($BundleZipFile) для извлечения Ubuntu_2204.1.7.0_x64.appx"
-    try {
-        Expand-Archive -Path $BundleZipFile -DestinationPath $BundleExtractPath -Force
-        Write-Host "✅ Распаковка .appxbundle завершена."
-    } catch {
-        Write-Host "❌ Ошибка при распаковке .appxbundle: $_"
-        exit 1
-    }
-
-    # 2.3 Распаковка Ubuntu_2204.1.7.0_x64.appx и извлечение install.tar.gz который является базовым rootfs
-    Write-Host "`n📦 Распаковка Ubuntu_2204.1.7.0_x64.appx и извлечение install.tar.gz который является базовым rootfs..."
-    try {
-		$AppxFile = Join-Path $BundleExtractPath "Ubuntu_2204.1.7.0_x64.appx"
-		$AppxZipFile = "$AppxFile.zip"
-        Copy-Item -Path $AppxFile -Destination $AppxZipFile -Force
-        Expand-Archive -Path $AppxZipFile -DestinationPath $BundleExtractPath -Force
-        Remove-Item $AppxZipFile
-		$BundleRootfs = Join-Path $BundleExtractPath "install.tar.gz" 
-        if (-not (Test-Path $RootfsDir)) { New-Item -ItemType Directory -Path $RootfsDir | Out-Null }
-        Move-Item -Path $BundleRootfs -Destination $BaseRootfs -Force
-        Write-Host "✅ $BundleRootfs переименован и перемещен в: $BaseRootfs"
-        $ImportRootfs = $BaseRootfs
-    } catch {
-        Write-Host "❌ Ошибка при распаковке .appx: $_"
-        exit 1
-    }
+		# 2.3 Распаковка Ubuntu_2204.1.7.0_x64.appx и извлечение install.tar.gz который является базовым rootfs
+		Write-Host "`n📦 Распаковка Ubuntu_2204.1.7.0_x64.appx и извлечение install.tar.gz который является базовым rootfs..."
+		try {
+			$AppxFile = Join-Path $BundleExtractPath "Ubuntu_2204.1.7.0_x64.appx"
+			$AppxZipFile = "$AppxFile.zip"
+			Copy-Item -Path $AppxFile -Destination $AppxZipFile -Force
+			Expand-Archive -Path $AppxZipFile -DestinationPath $BundleExtractPath -Force
+			Remove-Item $AppxZipFile
+			$BundleRootfs = Join-Path $BundleExtractPath "install.tar.gz" 
+			if (-not (Test-Path $RootfsDir)) { New-Item -ItemType Directory -Path $RootfsDir | Out-Null }
+			Move-Item -Path $BundleRootfs -Destination $BaseRootfs -Force
+			Write-Host "✅ $BundleRootfs переименован и перемещен в: $BaseRootfs"
+			$ImportRootfs = $BaseRootfs
+		} catch {
+			Write-Host "❌ Ошибка при распаковке .appx: $_"
+			exit 1
+		}
+	}
 }
 
 		
 # === 3. Импорт WSL дистро ===
-
-Write-Host "`n3. 💽 Импортируем WSL-дистрибутив из '$ImportRootfs'..."
-wsl --import $DistroName "$ScriptDir\$DistroName" $ImportRootfs --version 2
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Ошибка при импорте дистрибутива."
-    exit 1
+if (-not $useExistingDistro) {
+	Write-Host "`n3. 💽 Импортируем WSL-дистрибутив"
+	Write-Host "из '$ImportRootfs'"
+	Write-Host "в  '$InstallDistroDir'"
+	wsl --import $DistroName $InstallDistroDir $ImportRootfs --version 2
+	if ($LASTEXITCODE -ne 0) {
+		Write-Host "❌ Ошибка при импорте дистрибутива."
+		exit 1
+	}
 }
-
 
 
 # === 4. Восстановление DNS===
@@ -830,9 +951,11 @@ Write-Host "✅ Конфигурация сохранена в WSL: $WSL_ENV_FIL
 
 
 # === 6. Создание снапшота ===
-Write-Host "`n8. 💽 Создаём rootfs-снапшот дистрибутива..."
-wsl --export $DistroName $FinalRootfs
-Write-Host "✅ Снапшот сохранён: $FinalRootfs"
+if (-not $useExistingDistro) {
+	Write-Host "`n6. 💽 Создаём rootfs-снапшот дистрибутива..."
+	wsl --export $DistroName $FinalRootfs
+	Write-Host "✅ Снапшот сохранён: $FinalRootfs"
+}
 
 # === 7. Инструкция ===
 Write-Host "`n✅ Установка завершена!"

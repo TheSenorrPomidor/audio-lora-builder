@@ -35,6 +35,9 @@ output/
 *.out
 *.err
 
+#Ярлыки
+*.lnk
+
 # Чисто на всякий случай
 *.tar.gz
 *.zip
@@ -44,6 +47,7 @@ output/
 audio_src/
 audio-lora/
 rootfs/
+backup/
 temp/
 ssh_keys/
 temp — копия/
