@@ -149,9 +149,13 @@ function Get-InstallDistroDir {
     $selectedOption = $options | Where-Object { $_.Number -eq [int]$choice }
     
     if ($selectedOption) {
-        return $selectedOption.Path
+		Write-Host "Выбран путь $($selectedOption.Path)"
+		if (-not (Test-Path $($selectedOption.Path))) { New-Item -ItemType Directory -Path $($selectedOption.Path) }
+        return "$($selectedOption.Path)"
     } else {
         Write-Host "❌ Неверный выбор, используем стандартный путь: $DefaultDir"
+		Write-Host "Выбран путь дефолт $DefaultDir"
+		if (-not (Test-Path $DefaultDir)) { New-Item -ItemType Directory -Path $DefaultDir }
         return $DefaultDir
     }
 }

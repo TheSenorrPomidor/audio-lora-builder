@@ -327,12 +327,12 @@ if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
         if HF_TOKEN:
             f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
-if not HF_TOKEN:
-    print("⚠️ Не найден токен Hugging Face.")
-    HF_TOKEN = input("Введите токен Hugging Face: ").strip()
-    Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
-    with open(ENV_FILE, "a", encoding="utf-8") as f:
-        f.write(f"HF_TOKEN={HF_TOKEN}\n")
+#if not HF_TOKEN:
+#    print("⚠️ Не найден токен Hugging Face.")
+#    HF_TOKEN = input("Введите токен Hugging Face: ").strip()
+#    Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
+#    with open(ENV_FILE, "a", encoding="utf-8") as f:
+#        f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
 # === 2. Конвертация файлов (с нормализацией громкости) ===
 print("2. 🎧 Конвертация аудиофайлов...")
@@ -384,8 +384,8 @@ whisper_model = WhisperModel(
 )
 
 pipeline = Pipeline.from_pretrained(
-    "pyannote/speaker-diarization-3.1",
-    use_auth_token=HF_TOKEN
+    "pyannote/speaker-diarization-3.1"
+    #,use_auth_token=HF_TOKEN
 )
 audio_reader = Audio(sample_rate=16000, mono='downmix')
 
