@@ -336,21 +336,22 @@ if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
 
 # === 2. Конвертация файлов (с нормализацией громкости) ===
 print("2. 🎧 Конвертация аудиофайлов...")
-AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav"]
+AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav", ".ogg"]  # Добавил .ogg на всякий случай
 SRC = Path(WIN_AUDIO_SRC)
 DST = Path("/root/audio-lora-builder/input/audio_src")
 
-if DST.exists():
-    shutil.rmtree(DST)
+# УБИРАЕМ УДАЛЕНИЕ ПАПКИ! Просто создаем, если ее нет.
 DST.mkdir(parents=True, exist_ok=True)
 
 files = [f for f in SRC.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+
 for idx, file in enumerate(files, 1):
     relative = file.relative_to(SRC)
     output = DST / relative.with_suffix(".wav")
     output.parent.mkdir(parents=True, exist_ok=True)
     
-    if not output.exists() or file.stat().st_mtime > output.stat().st_mtime:
+    # Конвертируем ТОЛЬКО если WAV-файла нет
+    if not output.exists():
         print(f"🎛 ({idx}) {file} → {output}")
         subprocess.run([
             "ffmpeg", "-y", "-i", str(file), 
