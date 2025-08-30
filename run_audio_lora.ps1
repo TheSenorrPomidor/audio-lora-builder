@@ -17,10 +17,10 @@ wsl -d $Distro -- rm -f $TargetLinuxFile
 Get-Content $ScriptPath -Raw | wsl -d $Distro -- bash -c "cat > $TargetLinuxFile"
 
 #Временно -  удаляем результат деятельности предыдущего прогона
-wsl -d $Distro -- bash -c "rm -rf /root/audio-lora-builder/output/*"
-wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/known_callers.pkl"
-wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/system_voices.pkl"
-wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/you_embedding.pkl"
+#wsl -d $Distro -- bash -c "rm -rf /root/audio-lora-builder/output/*"
+#wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/known_callers.pkl"
+#wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/system_voices.pkl"
+#wsl -d $Distro -- bash -c "rm -f /root/audio-lora-builder/config/you_embedding.pkl"
 
 
 # 4. Запускаем
