@@ -1,8 +1,8 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.90 (Optimized Speaker Recognition)")
+print("\n🔢 Версия скрипта process_audio.py 2.91 (Incremental Processing Only)")
 
-#=== Системные пакеты (deb) ===
+# === Системные пакеты (deb) ===
 #python3-pip
 #ffmpeg
 #dpkg-dev
@@ -89,7 +89,7 @@ MERGE_MIN_DURATION = 0.5           # Минимальная длительнос
 MERGE_MAX_GAP = 0.5                # Максимальный временной разрыв между сегментами для объединения (в секундах)
                                    # - Определяет, насколько большим может быть молчание между репликами одного спикера,
                                    #   чтобы эти реплики все еще считались частью одной непрерывной речи
-                                   # - Сегменты одного спикера с паузой меньше этого значения будут объединены
+                                   # - Сегменты одного спикера с пауза меньше этого значения будут объединены
                                    #   в один непрерывный сегмент в итоговом JSON
                                    #
                                    # Механизм работы:
@@ -267,7 +267,7 @@ def combine_all_json_files(output_dir, final_output_path):
     
     # Формируем финальную структуру
     combined_data = {
-        "version": "2.90",
+        "version": "2.91",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total_segments": len(all_segments),
         "total_warnings": len(all_warnings),
@@ -286,6 +286,10 @@ def combine_all_json_files(output_dir, final_output_path):
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
 known_caller_ids = {}  # caller_id -> embedding
 
+# === Глобальный словарь для эмбеддингов ===
+EMBEDDINGS_FILE = Path("/root/audio-lora-builder/config/audio_embeddings.pkl")
+audio_embeddings = {}  # (file_name, speaker) -> embedding
+
 # === Глобальный словарь для предупреждений ===
 file_warnings = defaultdict(list)  # file_name -> list of warnings
 
@@ -297,9 +301,21 @@ if KNOWN_CALLERS_FILE.exists():
     except:
         print("⚠️ Не удалось загрузить известных собеседников")
 
+if EMBEDDINGS_FILE.exists():
+    try:
+        with open(EMBEDDINGS_FILE, "rb") as f:
+            audio_embeddings = pickle.load(f)
+        print(f"🔊 Загружено {len(audio_embeddings)} сохраненных эмбеддингов")
+    except:
+        print("⚠️ Не удалось загрузить сохраненные эмбеддинги")
+
 def save_known_callers():
     with open(KNOWN_CALLERS_FILE, "wb") as f:
         pickle.dump(known_caller_ids, f)
+
+def save_embeddings():
+    with open(EMBEDDINGS_FILE, "wb") as f:
+        pickle.dump(audio_embeddings, f)
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -327,16 +343,9 @@ if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
         if HF_TOKEN:
             f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
-#if not HF_TOKEN:
-#    print("⚠️ Не найден токен Hugging Face.")
-#    HF_TOKEN = input("Введите токен Hugging Face: ").strip()
-#    Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
-#    with open(ENV_FILE, "a", encoding="utf-8") as f:
-#        f.write(f"HF_TOKEN={HF_TOKEN}\n")
-
 # === 2. Конвертация файлов (с нормализацией громкости) ===
 print("2. 🎧 Конвертация аудиофайлов...")
-AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav", ".ogg"]  # Добавил .ogg на всякий случай
+AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav"]
 SRC = Path(WIN_AUDIO_SRC)
 DST = Path("/root/audio-lora-builder/input/audio_src")
 
@@ -344,7 +353,6 @@ DST = Path("/root/audio-lora-builder/input/audio_src")
 DST.mkdir(parents=True, exist_ok=True)
 
 files = [f for f in SRC.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
-
 for idx, file in enumerate(files, 1):
     relative = file.relative_to(SRC)
     output = DST / relative.with_suffix(".wav")
@@ -386,7 +394,6 @@ whisper_model = WhisperModel(
 
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1"
-    #,use_auth_token=HF_TOKEN
 )
 audio_reader = Audio(sample_rate=16000, mono='downmix')
 
@@ -413,6 +420,12 @@ for idx, audio_path in enumerate(wav_files, 1):
     
     if output_path.exists():
         print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
+        # Добавляем эмбеддинги из сохраненных данных для кластеризации
+        for key, emb in audio_embeddings.items():
+            if key[0] == audio_path.name:
+                all_embeddings.append(emb)
+                all_file_names.append(key[0])
+                all_speaker_keys.append(key[1])
         continue
         
     print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
@@ -526,6 +539,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Сохраняем для каждого спикера в файле
                 file_speaker_avg_embeddings[(audio_path.name, speaker)] = avg_embedding
+                audio_embeddings[(audio_path.name, speaker)] = avg_embedding
                 
                 all_embeddings.append(avg_embedding)
                 all_file_names.append(audio_path.name)
@@ -769,7 +783,9 @@ total_segments, total_warnings = combine_all_json_files(OUTPUT_DIR, FINAL_OUTPUT
 print(f"✅ Объединено сегментов: {total_segments}, предупреждений: {total_warnings} → {FINAL_OUTPUT_PATH}")
 
 save_known_callers()
+save_embeddings()
 print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников")
+print(f"💾 Сохранено {len(audio_embeddings)} эмбеддингов")
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
