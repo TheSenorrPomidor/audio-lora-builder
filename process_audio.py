@@ -544,6 +544,8 @@ for idx, audio_path in enumerate(wav_files, 1):
                 all_embeddings.append(avg_embedding)
                 all_file_names.append(audio_path.name)
                 all_speaker_keys.append(speaker)
+                
+                save_embeddings()  # Сохраняем эмбеддинг после обработки каждого файла
             
     except Exception as e:
         tb = traceback.extract_tb(e.__traceback__)[0]
@@ -759,6 +761,7 @@ for idx, audio_path in enumerate(wav_files, 1):
                     known_caller_ids[caller_id] = avg_embedding
                 
                 print(f"  🔄 Обновлен эмбеддинг для собеседника: {caller_id}")
+                save_known_callers()  # Сохраняем после каждого обновления
         
         caller_id = caller_id or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
