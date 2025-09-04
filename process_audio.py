@@ -1,8 +1,8 @@
 ﻿#!/usr/bin/env python3
 # === Версия ===
-print("\n🔢 Версия скрипта process_audio.py 2.92 (Incremental Processing with Stable Clustering)")
+print("\n🔢 Версия скрипта process_audio.py 2.90 (Optimized Speaker Recognition)")
 
-# === Системные пакеты (deb) ===
+#=== Системные пакеты (deb) ===
 #python3-pip
 #ffmpeg
 #dpkg-dev
@@ -89,7 +89,7 @@ MERGE_MIN_DURATION = 0.5           # Минимальная длительнос
 MERGE_MAX_GAP = 0.5                # Максимальный временной разрыв между сегментами для объединения (в секундах)
                                    # - Определяет, насколько большим может быть молчание между репликами одного спикера,
                                    #   чтобы эти реплики все еще считались частью одной непрерывной речи
-                                   # - Сегменты одного спикера с пауза меньше этого значения будут объединены
+                                   # - Сегменты одного спикера с паузой меньше этого значения будут объединены
                                    #   в один непрерывный сегмент в итоговом JSON
                                    #
                                    # Механизм работы:
@@ -267,7 +267,7 @@ def combine_all_json_files(output_dir, final_output_path):
     
     # Формируем финальную структуру
     combined_data = {
-        "version": "2.92",
+        "version": "2.90",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total_segments": len(all_segments),
         "total_warnings": len(all_warnings),
@@ -286,65 +286,8 @@ def combine_all_json_files(output_dir, final_output_path):
 KNOWN_CALLERS_FILE = Path("/root/audio-lora-builder/config/known_callers.pkl")
 known_caller_ids = {}  # caller_id -> embedding
 
-# === Глобальный словарь для эмбеддингов ===
-EMBEDDINGS_FILE = Path("/root/audio-lora-builder/config/audio_embeddings.pkl")
-audio_embeddings = {}  # (file_name, speaker) -> embedding
-
-# === Пути для сохранения модели кластеризации ===
-KMEANS_MODEL_FILE = Path("/root/audio-lora-builder/config/kmeans_model.pkl")
-CLUSTER_ASSIGNMENTS_FILE = Path("/root/audio-lora-builder/config/cluster_assignments.pkl")
-
 # === Глобальный словарь для предупреждений ===
 file_warnings = defaultdict(list)  # file_name -> list of warnings
-
-def save_kmeans_model(kmeans, pca, centroid_0, centroid_1, main_cluster):
-    """Сохраняет модель кластеризации и связанные данные"""
-    try:
-        model_data = {
-            'kmeans': kmeans,
-            'pca': pca,
-            'centroid_0': centroid_0,
-            'centroid_1': centroid_1,
-            'main_cluster': main_cluster
-        }
-        with open(KMEANS_MODEL_FILE, "wb") as f:
-            pickle.dump(model_data, f)
-        print(f"💾 Модель кластеризации сохранена")
-    except Exception as e:
-        print(f"⚠️ Ошибка при сохранении модели кластеризации: {e}")
-
-def load_kmeans_model():
-    """Загружает модель кластеризации и связанные данные"""
-    if not KMEANS_MODEL_FILE.exists():
-        return None
-        
-    try:
-        with open(KMEANS_MODEL_FILE, "rb") as f:
-            return pickle.load(f)
-    except:
-        print("⚠️ Не удалось загрузить модель кластеризации")
-        return None
-
-def save_cluster_assignments(assignments):
-    """Сохраняет принадлежность к кластерам для каждого файла"""
-    try:
-        with open(CLUSTER_ASSIGNMENTS_FILE, "wb") as f:
-            pickle.dump(assignments, f)
-        print(f"💾 Назначения кластеров сохранены")
-    except Exception as e:
-        print(f"⚠️ Ошибка при сохранении назначений кластеров: {e}")
-
-def load_cluster_assignments():
-    """Загружает принадлежность к кластерам для каждого файла"""
-    if not CLUSTER_ASSIGNMENTS_FILE.exists():
-        return {}
-        
-    try:
-        with open(CLUSTER_ASSIGNMENTS_FILE, "rb") as f:
-            return pickle.load(f)
-    except:
-        print("⚠️ Не удалось загрузить назначения кластеров")
-        return {}
 
 if KNOWN_CALLERS_FILE.exists():
     try:
@@ -354,29 +297,9 @@ if KNOWN_CALLERS_FILE.exists():
     except:
         print("⚠️ Не удалось загрузить известных собеседников")
 
-if EMBEDDINGS_FILE.exists():
-    try:
-        with open(EMBEDDINGS_FILE, "rb") as f:
-            audio_embeddings = pickle.load(f)
-        print(f"🔊 Загружено {len(audio_embeddings)} сохраненных эмбеддингов")
-    except:
-        print("⚠️ Не удалось загрузить сохраненные эмбеддинги")
-
 def save_known_callers():
-    try:
-        with open(KNOWN_CALLERS_FILE, "wb") as f:
-            pickle.dump(known_caller_ids, f)
-        print(f"💾 Известные собеседники сохранены")
-    except Exception as e:
-        print(f"⚠️ Ошибка при сохранении известных собеседников: {e}")
-
-def save_embeddings():
-    try:
-        with open(EMBEDDINGS_FILE, "wb") as f:
-            pickle.dump(audio_embeddings, f)
-        print(f"💾 Эмбеддинги сохранены")
-    except Exception as e:
-        print(f"⚠️ Ошибка при сохранении эмбеддингов: {e}")
+    with open(KNOWN_CALLERS_FILE, "wb") as f:
+        pickle.dump(known_caller_ids, f)
 
 # === 1. Чтение конфигурации ===
 print("1. Чтение конфигурации...")
@@ -404,13 +327,21 @@ if not WIN_AUDIO_SRC or not os.path.exists(WIN_AUDIO_SRC):
         if HF_TOKEN:
             f.write(f"HF_TOKEN={HF_TOKEN}\n")
 
+#if not HF_TOKEN:
+#    print("⚠️ Не найден токен Hugging Face.")
+#    HF_TOKEN = input("Введите токен Hugging Face: ").strip()
+#    Path("/root/audio-lora-builder/config").mkdir(parents=True, exist_ok=True)
+#    with open(ENV_FILE, "a", encoding="utf-8") as f:
+#        f.write(f"HF_TOKEN={HF_TOKEN}\n")
+
 # === 2. Конвертация файлов (с нормализацией громкости) ===
 print("2. 🎧 Конвертация аудиофайлов...")
 AUDIO_EXTENSIONS = [".m4a", ".mp3", ".aac", ".wav"]
 SRC = Path(WIN_AUDIO_SRC)
 DST = Path("/root/audio-lora-builder/input/audio_src")
 
-# УБИРАЕМ УДАЛЕНИЕ ПАПКИ! Просто создаем, если ее нет.
+if DST.exists():
+    shutil.rmtree(DST)
 DST.mkdir(parents=True, exist_ok=True)
 
 files = [f for f in SRC.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
@@ -419,8 +350,7 @@ for idx, file in enumerate(files, 1):
     output = DST / relative.with_suffix(".wav")
     output.parent.mkdir(parents=True, exist_ok=True)
     
-    # Конвертируем ТОЛЬКО если WAV-файла нет
-    if not output.exists():
+    if not output.exists() or file.stat().st_mtime > output.stat().st_mtime:
         print(f"🎛 ({idx}) {file} → {output}")
         subprocess.run([
             "ffmpeg", "-y", "-i", str(file), 
@@ -455,6 +385,7 @@ whisper_model = WhisperModel(
 
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1"
+    #,use_auth_token=HF_TOKEN
 )
 audio_reader = Audio(sample_rate=16000, mono='downmix')
 
@@ -462,9 +393,6 @@ embedding_model = Inference(
     "pyannote/embedding",
     pre_aggregation_hook=lambda spec: np.mean(spec, axis=-1)
 )
-
-# Загружаем предыдущие назначения кластеров
-previous_assignments = load_cluster_assignments()
 
 # === Первый проход: извлечение эмбеддингов ===
 print("🔍 Первый проход: извлечение голосовых эмбеддингов...")
@@ -484,12 +412,6 @@ for idx, audio_path in enumerate(wav_files, 1):
     
     if output_path.exists():
         print(f"⏩ ({idx}/{len(wav_files)}) Пропуск (уже обработан): {rel_path}")
-        # Добавляем эмбеддинги из сохраненных данных для кластеризации
-        for key, emb in audio_embeddings.items():
-            if key[0] == audio_path.name:
-                all_embeddings.append(emb)
-                all_file_names.append(key[0])
-                all_speaker_keys.append(key[1])
         continue
         
     print(f"  🎤 ({idx}/{len(wav_files)}) {rel_path} (извлечение эмбеддингов)")
@@ -603,15 +525,10 @@ for idx, audio_path in enumerate(wav_files, 1):
                 
                 # Сохраняем для каждого спикера в файле
                 file_speaker_avg_embeddings[(audio_path.name, speaker)] = avg_embedding
-                audio_embeddings[(audio_path.name, speaker)] = avg_embedding
                 
                 all_embeddings.append(avg_embedding)
                 all_file_names.append(audio_path.name)
                 all_speaker_keys.append(speaker)
-        
-        # Сохраняем эмбеддинги после обработки каждого файла
-        save_embeddings()
-        save_cluster_assignments(previous_assignments)
             
     except Exception as e:
         tb = traceback.extract_tb(e.__traceback__)[0]
@@ -639,136 +556,56 @@ if len(all_embeddings) < 2:
     exit(1)
 
 print("🔮 Кластеризация спикеров...")
+embeddings_array = np.array(all_embeddings)
 
-# Определяем, какие эмбеддинги новые
-new_embeddings = []
-new_file_names = []
-new_speaker_keys = []
+pca = PCA(n_components=min(50, len(embeddings_array)-1))
+embeddings_reduced = pca.fit_transform(embeddings_array)
 
+kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
+labels = kmeans.labels_
+
+# Определение основного кластера "я" по охвату файлов
+print("🔮 Определение основного кластера 'я'...")
+cluster_files = {0: set(), 1: set()}
 for i in range(len(all_embeddings)):
-    file_speaker_key = (all_file_names[i], all_speaker_keys[i])
-    if file_speaker_key not in previous_assignments:
-        new_embeddings.append(all_embeddings[i])
-        new_file_names.append(all_file_names[i])
-        new_speaker_keys.append(all_speaker_keys[i])
+    file_name = all_file_names[i]
+    cluster_id = labels[i]
+    cluster_files[cluster_id].add(file_name)
 
-# Загружаем существующую модель или создаем новую
-model_data = load_kmeans_model()
+file_counts = {0: len(cluster_files[0]), 1: len(cluster_files[1])}
+print(f"🔮 Файлов в кластере 0: {file_counts[0]}, в кластере 1: {file_counts[1]}")
 
-if model_data and new_embeddings:
-    # Используем существующую модель для новых данных
-    print("🔮 Используем существующую модель для новых данных...")
-    kmeans = model_data['kmeans']
-    pca = model_data['pca']
-    centroid_0 = model_data['centroid_0']
-    centroid_1 = model_data['centroid_1']
-    main_cluster = model_data['main_cluster']
-    
-    # Преобразуем новые эмбеддинги с помощью PCA
-    new_embeddings_reduced = pca.transform(new_embeddings)
-    
-    # Предсказываем кластеры для новых данных
-    new_labels = kmeans.predict(new_embeddings_reduced)
-    
-    # Обновляем назначения кластеров
-    for i in range(len(new_embeddings)):
-        file_speaker_key = (new_file_names[i], new_speaker_keys[i])
-        previous_assignments[file_speaker_key] = new_labels[i]
-    
-    # Сохраняем обновленные назначения
-    save_cluster_assignments(previous_assignments)
-    
-    # Используем обновленные назначения для всех данных
-    labels = []
-    for i in range(len(all_embeddings)):
-        file_speaker_key = (all_file_names[i], all_speaker_keys[i])
-        labels.append(previous_assignments[file_speaker_key])
-    
-    labels = np.array(labels)
-    
-elif not model_data:
-    # Создаем новую модель (первый запуск)
-    print("🔮 Создаем новую модель кластеризации...")
-    
-    # Используем PCA для уменьшения размерности
-    pca = PCA(n_components=min(50, len(all_embeddings)-1))
-    embeddings_reduced = pca.fit_transform(all_embeddings)
-    
-    # Кластеризация
-    kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(embeddings_reduced)
-    labels = kmeans.labels_
-    
-    # Сохраняем модель и назначения
-    centroid_0 = kmeans.cluster_centers_[0]
-    centroid_1 = kmeans.cluster_centers_[1]
-    
-    # Определение основного кластера "я"
-    cluster_files = {0: set(), 1: set()}
-    for i in range(len(all_embeddings)):
-        file_name = all_file_names[i]
-        cluster_id = labels[i]
-        cluster_files[cluster_id].add(file_name)
-
-    file_counts = {0: len(cluster_files[0]), 1: len(cluster_files[1])}
-    print(f"🔮 Файлов в кластере 0: {file_counts[0]}, в кластере 1: {file_counts[1]}")
-    
-    if file_counts[0] >= file_counts[1] * (1 + MAIN_CLUSTER_BIAS):
-        main_cluster = 0
-        print(f"🔮 Основной кластер 0 (охват: {file_counts[0]}/{len(wav_files)} файлов, bias: {MAIN_CLUSTER_BIAS})")
-    else:
-        main_cluster = 1
-        print(f"🔮 Основной кластер 1 (охват: {file_counts[1]}/{len(wav_files)} файлов, bias: {MAIN_CLUSTER_BIAS})")
-        
-    # Сохраняем модель и назначения
-    save_kmeans_model(kmeans, pca, centroid_0, centroid_1, main_cluster)
-    
-    # Сохраняем назначения кластеров
-    for i in range(len(all_embeddings)):
-        file_speaker_key = (all_file_names[i], all_speaker_keys[i])
-        previous_assignments[file_speaker_key] = labels[i]
-    
-    save_cluster_assignments(previous_assignments)
+# Применяем смещение в пользу основного кластера
+if file_counts[0] >= file_counts[1] * (1 + MAIN_CLUSTER_BIAS):
+    main_cluster = 0
+    print(f"🔮 Основной кластер 0 (охват: {file_counts[0]}/{len(wav_files)} файлов, bias: {MAIN_CLUSTER_BIAS})")
 else:
-    # Нет новых данных, используем существующую модель
-    print("🔮 Нет новых данных, используем существующую модель...")
-    kmeans = model_data['kmeans']
-    pca = model_data['pca']
-    centroid_0 = model_data['centroid_0']
-    centroid_1 = model_data['centroid_1']
-    main_cluster = model_data['main_cluster']
-    
-    # Используем сохраненные назначения
-    labels = []
-    for i in range(len(all_embeddings)):
-        file_speaker_key = (all_file_names[i], all_speaker_keys[i])
-        labels.append(previous_assignments[file_speaker_key])
-    
-    labels = np.array(labels)
+    main_cluster = 1
+    print(f"🔮 Основной кластер 1 (охват: {file_counts[1]}/{len(wav_files)} файлов, bias: {MAIN_CLUSTER_BIAS})")
 
-print("🔮 Определение ролей спикеров...")
+# Точное определение ролей через расстояния до центроидов
+print("🔮 Точное определение ролей через расстояния до центроидов...")
+centroid_0 = kmeans.cluster_centers_[0]
+centroid_1 = kmeans.cluster_centers_[1]
+
 speaker_roles = {}
-
 for (file_name, speaker), embedding in file_speaker_avg_embeddings.items():
-    file_speaker_key = (file_name, speaker)
+    # Преобразуем эмбеддинг в PCA-пространство
+    emb_pca = pca.transform(embedding.reshape(1, -1))[0]
     
-    if file_speaker_key in previous_assignments:
-        # Используем сохраненное назначение кластера
-        cluster_id = previous_assignments[file_speaker_key]
-        is_you = (cluster_id == main_cluster)
+    # Вычисляем расстояния до центроидов
+    dist_to_0 = np.linalg.norm(emb_pca - centroid_0)
+    dist_to_1 = np.linalg.norm(emb_pca - centroid_1)
+    
+    # Определяем принадлежность к основному кластеру с порогом сходства
+    if main_cluster == 0:
+        is_you = dist_to_0 < dist_to_1 * (1 - SIMILARITY_THRESHOLD / 10)
     else:
-        # Для новых данных определяем роль на основе расстояния до центроидов
-        emb_pca = pca.transform(embedding.reshape(1, -1))[0]
-        
-        dist_to_0 = np.linalg.norm(emb_pca - centroid_0)
-        dist_to_1 = np.linalg.norm(emb_pca - centroid_1)
-        
-        if main_cluster == 0:
-            is_you = dist_to_0 < dist_to_1 * (1 - SIMILARITY_THRESHOLD / 10)
-        else:
-            is_you = dist_to_1 < dist_to_0 * (1 - SIMILARITY_THRESHOLD / 10)
+        is_you = dist_to_1 < dist_to_0 * (1 - SIMILARITY_THRESHOLD / 10)
     
-    speaker_roles[file_speaker_key] = is_you
-    print(f"  🎯 {file_name}:{speaker} -> {'я' if is_you else 'собеседник'}")
+    speaker_roles[(file_name, speaker)] = is_you
+    print(f"  🎯 {file_name}:{speaker} -> {'я' if is_you else 'собеседник'} "
+          f"(d0={dist_to_0:.2f}, d1={dist_to_1:.2f})")
 
 # Проверка качества диаризации
 for audio_path in wav_files:
@@ -907,7 +744,6 @@ for idx, audio_path in enumerate(wav_files, 1):
                     known_caller_ids[caller_id] = avg_embedding
                 
                 print(f"  🔄 Обновлен эмбеддинг для собеседника: {caller_id}")
-                save_known_callers()  # Сохраняем после каждого обновления
         
         caller_id = caller_id or "caller"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -931,15 +767,8 @@ FINAL_OUTPUT_PATH = OUTPUT_DIR / "all_data.json"
 total_segments, total_warnings = combine_all_json_files(OUTPUT_DIR, FINAL_OUTPUT_PATH)
 print(f"✅ Объединено сегментов: {total_segments}, предупреждений: {total_warnings} → {FINAL_OUTPUT_PATH}")
 
-# Сохраняем модель кластеризации и назначения
-if 'kmeans' in locals() and 'pca' in locals():
-    save_kmeans_model(kmeans, pca, centroid_0, centroid_1, main_cluster)
-save_cluster_assignments(previous_assignments)
-
 save_known_callers()
-save_embeddings()
 print(f"💾 Сохранено {len(known_caller_ids)} известных собеседников")
-print(f"💾 Сохранено {len(audio_embeddings)} эмбеддингов")
 
 total_time = format_hhmmss(time.time() - start_all)
 print(f"\n✅ Обработка завершена. Обработано файлов: {processed_files}/{len(wav_files)}")
